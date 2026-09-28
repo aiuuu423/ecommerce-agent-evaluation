@@ -1,20 +1,26 @@
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+Money = Annotated[Decimal, Field(decimal_places=2)]
+ProductId = Annotated[str, Field(pattern=r"^P[0-9]{3}$")]
+CustomerId = Annotated[str, Field(pattern=r"^C[0-9]{4}$")]
+OrderId = Annotated[str, Field(pattern=r"^O[0-9]{6}$")]
+CampaignId = Annotated[str, Field(pattern=r"^M[0-9]{3}$")]
 
-class StrictModel(BaseModel):
+
+class DatasetRowModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ProductRow(StrictModel):
-    product_id: str = Field(pattern=r"^P\d{3}$")
+class ProductRow(DatasetRowModel):
+    product_id: ProductId
     product_name: str = Field(min_length=1)
     category: str = Field(min_length=1)
-    price: Decimal = Field(gt=0)
-    cost: Decimal = Field(gt=0)
+    price: Money = Field(gt=0)
+    cost: Money = Field(gt=0)
     launch_date: date
 
     @model_validator(mode="after")
@@ -24,16 +30,16 @@ class ProductRow(StrictModel):
         return self
 
 
-class CustomerRow(StrictModel):
-    customer_id: str = Field(pattern=r"^C\d{4}$")
+class CustomerRow(DatasetRowModel):
+    customer_id: CustomerId
     is_new_customer: bool
     region: str = Field(min_length=1)
     channel: str = Field(min_length=1)
 
 
-class TrafficRow(StrictModel):
+class TrafficRow(DatasetRowModel):
     date: date
-    product_id: str
+    product_id: ProductId
     impressions: int | None = Field(default=None, ge=0)
     clicks: int | None = Field(default=None, ge=0)
     visits: int | None = Field(default=None, ge=0)
@@ -55,21 +61,21 @@ class TrafficRow(StrictModel):
         return self
 
 
-class MarketingRow(StrictModel):
+class MarketingRow(DatasetRowModel):
     date: date
-    product_id: str
-    campaign_id: str = Field(pattern=r"^M\d{3}$")
-    spend: Decimal = Field(ge=0)
+    product_id: ProductId
+    campaign_id: CampaignId
+    spend: Money = Field(ge=0)
 
 
-class OrderRow(StrictModel):
-    order_id: str = Field(pattern=r"^O\d{6}$")
-    product_id: str
-    customer_id: str
+class OrderRow(DatasetRowModel):
+    order_id: OrderId
+    product_id: ProductId
+    customer_id: CustomerId
     order_date: date
     quantity: int = Field(ge=1, le=20)
-    unit_price: Decimal = Field(gt=0)
-    revenue: Decimal = Field(gt=0)
+    unit_price: Money = Field(gt=0)
+    revenue: Money = Field(gt=0)
     is_refund: bool
     status: Literal["paid", "refunded"]
 
