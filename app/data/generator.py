@@ -51,7 +51,25 @@ MAX_REFUND_PROBABILITY = 0.65
 MAX_ORDER_SEQUENCE = 999_999
 PARQUET_ENGINE = "pyarrow"
 PARQUET_COMPRESSION = "snappy"
+GENERATOR_SOURCE_FILES = (
+    "config.py",
+    "generator.py",
+    "manifest.py",
+    "schemas.py",
+    "validation.py",
+)
 DimensionValue = TypeVar("DimensionValue")
+
+
+def generator_source_sha256() -> str:
+    digest = sha256()
+    source_dir = Path(__file__).parent
+    for filename in GENERATOR_SOURCE_FILES:
+        digest.update(filename.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((source_dir / filename).read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _rng(config: SyntheticDataConfig, stream_name: str) -> np.random.Generator:
@@ -480,6 +498,7 @@ def _load_existing_snapshot(
             for key in (
                 "dataset_id",
                 "config_sha256",
+                "generator_source_sha256",
                 "dataset_version",
                 "schema_version",
                 "seed",
@@ -497,6 +516,7 @@ def _load_existing_snapshot(
         for key in (
             "dataset_id",
             "config_sha256",
+            "generator_source_sha256",
             "dataset_version",
             "schema_version",
             "seed",
@@ -599,6 +619,7 @@ def build_snapshot(
         "source_label": config.source_label,
         "seed": config.seed,
         "config_sha256": config_digest,
+        "generator_source_sha256": generator_source_sha256(),
         "writer": writer,
         "tables": logical_tables,
         "data_quality_report": quality_metadata,
@@ -635,6 +656,9 @@ def build_snapshot(
                 "source_label": config.source_label,
                 "seed": config.seed,
                 "config_sha256": config_digest,
+                "generator_source_sha256": expected_identity[
+                    "generator_source_sha256"
+                ],
                 "writer": writer,
                 "tables": table_manifest,
                 "data_quality_report": quality_metadata,

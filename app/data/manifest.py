@@ -21,6 +21,7 @@ _MANIFEST_KEYS = {
     "source_label",
     "seed",
     "config_sha256",
+    "generator_source_sha256",
     "writer",
     "tables",
     "data_quality_report",
@@ -115,6 +116,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         )
         and type(manifest.get("seed")) is int
         and _valid_digest(manifest.get("config_sha256"))
+        and _valid_digest(manifest.get("generator_source_sha256"))
         and isinstance(manifest.get("writer"), dict)
         and bool(manifest["writer"])
     )

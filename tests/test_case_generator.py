@@ -988,10 +988,10 @@ def test_committed_case_snapshot_is_frozen_from_both_configs(tmp_path: Path) -> 
     assert (rebuilt_path / "manifest.json").read_bytes() == (
         committed_path / "manifest.json"
     ).read_bytes()
-    assert rebuilt_manifest["case_set_id"] == "6683c9b3a25c5776"
+    assert rebuilt_manifest["case_set_id"] == "35d8734343a1492d"
     assert (
         rebuilt_manifest["jsonl_sha256"]
-        == "03dffa499a8d4cd0415da070cfdb9e439e401229e9a7d67a0e2be9f56b8c8a62"
+        == "4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea"
     )
 
     split_difficulty_mapping = "\n".join(

@@ -59,6 +59,7 @@ def test_snapshot_writes_parquet_quality_report_and_stable_manifest(
     assert first == second
     assert len(first["dataset_id"]) == 16
     assert first["config_sha256"] == sha256(small_config.read_bytes()).hexdigest()
+    assert first["generator_source_sha256"] == generator.generator_source_sha256()
     assert first["source_label"] == "Synthetic E-commerce Data"
     assert first["writer"] == {
         "pandas_version": pd.__version__,
@@ -194,6 +195,23 @@ def test_existing_snapshot_rejects_metadata_only_config_change_with_same_tables(
 
     with pytest.raises(ValueError, match="immutable"):
         build_snapshot(metadata_only_config, output)
+
+
+def test_existing_snapshot_rejects_stale_generator_source_hash(
+    tmp_path: Path, small_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "v1"
+    manifest = build_snapshot(small_config, output)
+    changed_source_hash = "f" * 64
+    assert manifest["generator_source_sha256"] != changed_source_hash
+    monkeypatch.setattr(
+        generator,
+        "generator_source_sha256",
+        lambda: changed_source_hash,
+    )
+
+    with pytest.raises(ValueError, match="immutable"):
+        build_snapshot(small_config, output)
 
 
 @pytest.mark.parametrize(
