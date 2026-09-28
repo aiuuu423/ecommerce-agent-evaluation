@@ -37,31 +37,46 @@ def test_loads_versioned_config() -> None:
 
 
 @pytest.mark.parametrize(
-    "anomaly",
+    ("anomaly", "message"),
     [
-        {
-            "anomaly_id": "A1",
-            "kind": "traffic_drop",
-            "product_id": "P001",
-            "start_day": 40,
-            "end_day": 45,
-            "multiplier": 0.5,
-        },
-        {
-            "anomaly_id": "A1",
-            "kind": "traffic_drop",
-            "product_id": "P001",
-            "start_day": 20,
-            "end_day": 10,
-            "multiplier": 0.5,
-        },
+        (
+            {
+                "anomaly_id": "A1",
+                "kind": "traffic_drop",
+                "product_id": "P001",
+                "start_day": 40,
+                "end_day": 60,
+                "multiplier": 0.5,
+            },
+            "Value error, A1: anomaly outside dataset window",
+        ),
+        (
+            {
+                "anomaly_id": "A1",
+                "kind": "traffic_drop",
+                "product_id": "P001",
+                "start_day": 20,
+                "end_day": 10,
+                "multiplier": 0.5,
+            },
+            "Value error, A1: start_day exceeds end_day",
+        ),
     ],
 )
-def test_rejects_invalid_anomaly_range(anomaly: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
+def test_rejects_invalid_anomaly_range(
+    anomaly: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
         SyntheticDataConfig.model_validate(
-            minimal_config(days=30, anomalies=[anomaly])
+            minimal_config(days=60, anomalies=[anomaly])
         )
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1, errors
+    error = errors[0]
+    assert error["loc"] == ()
+    assert error["type"] == "value_error"
+    assert error["msg"] == message
 
 
 def test_anomaly_product_id_uses_dataset_schema_contract() -> None:
