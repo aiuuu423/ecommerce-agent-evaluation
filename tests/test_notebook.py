@@ -68,6 +68,9 @@ def test_notebook_uses_verified_catalog_without_holdout_leakage() -> None:
     assert "pd.read_parquet" not in code
     assert "read_text(" not in code
     assert 'catalogs["Holdout"].execute' not in code
+    assert 'catalogs = {"Development": open_dataset(SNAPSHOTS["Development"])}' in code
+    assert 'with open_dataset(SNAPSHOTS["Holdout"]) as holdout_catalog:' in code
+    assert "del holdout_catalog" in code
 
     lowered = content.lower()
     for forbidden in (
@@ -144,6 +147,28 @@ assert not missing_days.empty
 assert missing_days[["CTR", "CVR"]].isna().all().all()
 assert complete_days[["CTR", "CVR"]].notna().all().all()
 assert coverage_gaps[["CTR", "CVR"]].isna().all().all()
+
+assert set(catalogs) == {"Development"}
+development_count = catalogs["Development"].execute(
+    "select count(*) from orders"
+).fetchone()[0]
+assert development_count > 0
+
+holdout_dataset_id = dataset_summary.loc[
+    dataset_summary["dataset"].eq("Holdout"), "dataset_id"
+].item()
+queryable_holdout_handles = []
+for variable_name, value in list(globals().items()):
+    if not hasattr(value, "verified_summary") or not hasattr(value, "execute"):
+        continue
+    if value.verified_summary["dataset_id"] != holdout_dataset_id:
+        continue
+    try:
+        value.execute("select 1").fetchone()
+    except ValueError:
+        continue
+    queryable_holdout_handles.append(variable_name)
+assert queryable_holdout_handles == []
 """
         )
     )
