@@ -1,11 +1,9 @@
 import argparse
-import fcntl
 import json
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
@@ -15,6 +13,7 @@ from typing import Any, TypeVar
 import numpy as np
 import pandas as pd
 import pyarrow
+from filelock import FileLock
 
 from app.data.config import SyntheticDataConfig, load_data_config_with_sha256
 from app.data.manifest import (
@@ -453,15 +452,9 @@ def _publish_snapshot(staging_dir: Path, output_dir: Path) -> None:
     os.rename(staging_dir, output_dir)
 
 
-@contextmanager
-def _snapshot_lock(output_dir: Path) -> Iterator[None]:
+def _snapshot_lock(output_dir: Path) -> FileLock:
     lock_path = output_dir.parent / f".{output_dir.name}.lock"
-    with lock_path.open("a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return FileLock(lock_path)
 
 
 def _logical_table_manifest(

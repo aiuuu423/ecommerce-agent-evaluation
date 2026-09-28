@@ -17,12 +17,17 @@ make PYTHON=python3.12 test
 make PYTHON=python3.12 lint
 ```
 
+Phase 1 的文件锁使用锁定版本的 `filelock`，支持 Linux、macOS 和 Windows；项目命令仍
+依赖 `make`，Windows 用户需在提供 GNU Make 的环境（例如 WSL、MSYS2 或 Git Bash）中
+运行 Makefile，或直接调用下述 Python CLI。
+
 `requirements.lock` 固定完整的开发与运行时依赖树。修改 `pyproject.toml` 后，使用已安装
 `pip-tools` 的 Python 3.11+ 环境运行 `make PYTHON=python3.12 lock`，审阅 lock 文件差异后提交。
 
-`make phase1` 通过统一 CLI `python -m app.data.phase1` 读取 Development 与 Holdout
-两份配置，依次构建两套数据快照和 Evaluation Cases。若要在干净临时目录中复现且不触碰
-冻结产物，可覆盖输出根目录：
+`make phase1-data`、`make phase1-cases` 和 `make phase1` 全部委托统一 CLI
+`python -m app.data.phase1`。CLI 从 Development 与 Holdout 配置的 `dataset_version`
+动态推导数据目录，并以 Development 的 `dataset_version` 推导 Evaluation Cases 目录；
+不要求版本名为 `v1`。若要在干净临时目录中复现且不触碰冻结产物，可覆盖输出根目录：
 
 ```bash
 make PYTHON=python3.12 PHASE1_OUTPUT_ROOT=/tmp/phase1-clean phase1

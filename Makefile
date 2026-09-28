@@ -3,9 +3,6 @@ DEVELOPMENT_CONFIG ?= configs/data/synthetic_v1.yaml
 HOLDOUT_CONFIG ?= configs/data/synthetic_holdout_v1.yaml
 TOOL_CONTRACT ?= configs/evaluation/tool_contract_v1.yaml
 PHASE1_OUTPUT_ROOT ?= data
-DEVELOPMENT_DATASET := $(PHASE1_OUTPUT_ROOT)/synthetic/v1
-HOLDOUT_DATASET := $(PHASE1_OUTPUT_ROOT)/synthetic/holdout-v1
-EVALUATION_CASES := $(PHASE1_OUTPUT_ROOT)/evaluation_cases/v1
 
 .PHONY: check-python install lock test lint phase1-data phase1-cases phase1
 
@@ -31,23 +28,25 @@ lint: check-python
 	$(PYTHON) -m ruff check app tests notebooks
 
 phase1-data: check-python
-	$(PYTHON) -m app.data.generator \
-		--config "$(DEVELOPMENT_CONFIG)" \
-		--output "$(DEVELOPMENT_DATASET)"
-	$(PYTHON) -m app.data.generator \
-		--config "$(HOLDOUT_CONFIG)" \
-		--output "$(HOLDOUT_DATASET)"
+	$(PYTHON) -m app.data.phase1 \
+		--development-config "$(DEVELOPMENT_CONFIG)" \
+		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--tool-contract "$(TOOL_CONTRACT)" \
+		--output-root "$(PHASE1_OUTPUT_ROOT)" \
+		--stage data
 
 phase1-cases: check-python
-	$(PYTHON) -m app.data.case_generator \
-		--development-dataset "$(DEVELOPMENT_DATASET)" \
-		--holdout-dataset "$(HOLDOUT_DATASET)" \
+	$(PYTHON) -m app.data.phase1 \
+		--development-config "$(DEVELOPMENT_CONFIG)" \
+		--holdout-config "$(HOLDOUT_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
-		--output "$(EVALUATION_CASES)"
+		--output-root "$(PHASE1_OUTPUT_ROOT)" \
+		--stage cases
 
 phase1: check-python
 	$(PYTHON) -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
 		--holdout-config "$(HOLDOUT_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
-		--output-root "$(PHASE1_OUTPUT_ROOT)"
+		--output-root "$(PHASE1_OUTPUT_ROOT)" \
+		--stage all

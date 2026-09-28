@@ -20,6 +20,7 @@ def test_project_metadata_declares_python_311_and_phase_1_dependencies() -> None
     assert project["requires-python"] == ">=3.11"
     assert dependency_names(project["dependencies"]) == {
         "duckdb",
+        "filelock",
         "numpy",
         "pandas",
         "pyarrow",

@@ -19,7 +19,7 @@
     },
     {
       "path": "synthetic/holdout-v1/manifest.json",
-      "sha256": "3309a17ad3c150cb235fa3b480f4b5a999f80166a0c876e5b34e297569491ee6"
+      "sha256": "8ee31b681015ef0b3dd4f7d0c5f59b7c036b14a367756160029d4a11d8d7e8e6"
     },
     {
       "path": "synthetic/holdout-v1/marketing.parquet",
@@ -47,7 +47,7 @@
     },
     {
       "path": "synthetic/v1/manifest.json",
-      "sha256": "dc3ee75addec72b71d3e18df7dd7a8dc06a8ec514629389e47f1873df11e7b6b"
+      "sha256": "42b8632c05b50a86635200f6e86a0309dc6854bee3800e887f7cca33e8afd8b7"
     },
     {
       "path": "synthetic/v1/marketing.parquet",

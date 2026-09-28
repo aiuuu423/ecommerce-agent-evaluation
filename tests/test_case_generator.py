@@ -1,5 +1,7 @@
 import json
+import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from difflib import SequenceMatcher
 from hashlib import sha256
@@ -1013,4 +1015,24 @@ def test_case_snapshot_is_an_atomic_immutable_directory(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="immutable"):
         write_cases(cases, output)
+    assert not list(tmp_path.glob(".case-snapshot-v1.tmp-*"))
+
+
+def test_concurrent_case_writers_publish_one_complete_snapshot(tmp_path: Path) -> None:
+    cases, _, _ = build_test_case_set(tmp_path)
+    output = tmp_path / "case-snapshot-v1"
+    barrier = threading.Barrier(2)
+
+    def write_after_barrier(_: int) -> dict[str, object]:
+        barrier.wait(timeout=10)
+        return write_cases(cases, output)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(write_after_barrier, range(2)))
+
+    assert results[0] == results[1]
+    assert set(path.name for path in output.iterdir()) == {
+        "cases.jsonl",
+        "manifest.json",
+    }
     assert not list(tmp_path.glob(".case-snapshot-v1.tmp-*"))

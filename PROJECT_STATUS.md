@@ -7,9 +7,9 @@
 状态：`Completed / Awaiting Review`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
-100 个冻结 Evaluation Cases；统一 CLI 与 `make phase1` 可从双配置在干净输出根目录
-完整复现数据、Cases 和 Manifest。快照身份绑定生成器源码，只读数据探索 Notebook
-已完成真实执行验证。
+100 个冻结 Evaluation Cases；三个 Makefile Phase 1 目标统一委托单一 CLI，并从配置的
+`dataset_version` 动态推导输出目录。快照身份绑定生成器源码，跨平台文件锁与只读数据
+探索 Notebook 已完成真实执行验证。
 
 ## Completed
 
@@ -34,6 +34,8 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
 - [x] 建立只读数据探索 Notebook，并隔离 Holdout 查询句柄。
 - [x] 建立统一 Phase 1 CLI 与可覆盖输出根目录的 Makefile 入口。
+- [x] 使用锁定版本的 `filelock` 支持 Linux、macOS 与 Windows 并发发布。
+- [x] 使用非 `v1` 配置端到端验证动态输出目录。
 - [x] 验证干净重建的 16 个产物文件与冻结版本逐字节一致。
 - [x] 验证 Gold SQL 不读取生成配置、异常 ID 或异常倍率。
 - [x] 完成 Phase 1 全量测试、静态检查与 Notebook 真实执行。
@@ -88,12 +90,12 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - Holdout 行数：products `40`、customers `300`、traffic `4,800`、
   marketing `4,800`、orders `26,790`。
 - Generator Source SHA-256：
-  `09d6bdcff63ca536277f52a3b17fb7df4d7bb2063399ea47576689643371b630`。
+  `cdbc078dca3b30e7d00552e275d22171868658e8dd9c805969164e13f56722f0`。
 - Case Set ID：`35d8734343a1492d`；JSONL SHA-256：
   `4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea`。
 - Cases：`100`，Development/Holdout Split 为 `70/30`。
 - Gold 独立性与端到端复现定向测试：`2 passed`。
-- 全量测试：`354 passed`。
+- 全量测试：`357 passed`。
 - Notebook 结构与真实执行测试：`6 passed`（项目根目录与 `notebooks/` 两种工作目录）。
 - `python -m ruff check app tests notebooks`：`All checks passed!`。
 - `git diff --check`：PASS。

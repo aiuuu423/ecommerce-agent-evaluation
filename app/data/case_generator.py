@@ -1,5 +1,4 @@
 import argparse
-import fcntl
 import json
 import os
 import shutil
@@ -11,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 import yaml
+from filelock import FileLock
 
 from app.data.gold import build_gold_bundle
 from app.data.manifest import (
@@ -783,8 +783,7 @@ def write_cases(
     output = Path(output_dir).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     lock_path = output.parent / f".{output.name}.lock"
-    with lock_path.open("a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    with FileLock(lock_path):
         if output.exists() or output.is_symlink():
             if output.is_symlink() or not output.is_dir():
                 raise ValueError(f"case snapshot is not an immutable directory: {output}")

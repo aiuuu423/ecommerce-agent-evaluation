@@ -28,6 +28,8 @@ executing==2.2.1
     # via stack-data
 fastjsonschema==2.22.2
     # via nbformat
+filelock==3.32.7
+    # via ecommerce-agent-evaluation (pyproject.toml)
 iniconfig==2.3.0
     # via pytest
 ipykernel==6.31.0

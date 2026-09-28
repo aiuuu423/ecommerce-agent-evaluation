@@ -8,6 +8,22 @@ from app.data.generator import build_snapshot
 DEFAULT_DEVELOPMENT_CONFIG = Path("configs/data/synthetic_v1.yaml")
 DEFAULT_HOLDOUT_CONFIG = Path("configs/data/synthetic_holdout_v1.yaml")
 DEFAULT_OUTPUT_ROOT = Path("data")
+PHASE1_STAGES = ("data", "cases", "all")
+
+
+def phase1_paths(
+    development_config: Path | str = DEFAULT_DEVELOPMENT_CONFIG,
+    holdout_config: Path | str = DEFAULT_HOLDOUT_CONFIG,
+    output_root: Path | str = DEFAULT_OUTPUT_ROOT,
+) -> dict[str, Path]:
+    root = Path(output_root)
+    development_version = load_data_config(development_config).dataset_version
+    holdout_version = load_data_config(holdout_config).dataset_version
+    return {
+        "development": root / "synthetic" / development_version,
+        "holdout": root / "synthetic" / holdout_version,
+        "cases": root / "evaluation_cases" / development_version,
+    }
 
 
 def build_phase1(
@@ -15,24 +31,24 @@ def build_phase1(
     holdout_config: Path | str = DEFAULT_HOLDOUT_CONFIG,
     tool_contract: Path | str = DEFAULT_TOOL_CONTRACT,
     output_root: Path | str = DEFAULT_OUTPUT_ROOT,
+    stage: str = "all",
 ) -> dict[str, object]:
-    root = Path(output_root)
-    development_version = load_data_config(development_config).dataset_version
-    holdout_version = load_data_config(holdout_config).dataset_version
-    development_dir = root / "synthetic" / development_version
-    holdout_dir = root / "synthetic" / holdout_version
+    if stage not in PHASE1_STAGES:
+        raise ValueError(f"unknown Phase 1 stage: {stage}")
 
-    development_manifest = build_snapshot(development_config, development_dir)
-    holdout_manifest = build_snapshot(holdout_config, holdout_dir)
-    case_manifest = write_cases(
-        build_cases(development_dir, holdout_dir, tool_contract),
-        root / "evaluation_cases" / "v1",
-    )
-    return {
-        "development": development_manifest,
-        "holdout": holdout_manifest,
-        "cases": case_manifest,
-    }
+    paths = phase1_paths(development_config, holdout_config, output_root)
+    manifests: dict[str, object] = {}
+    if stage in {"data", "all"}:
+        manifests["development"] = build_snapshot(
+            development_config, paths["development"]
+        )
+        manifests["holdout"] = build_snapshot(holdout_config, paths["holdout"])
+    if stage in {"cases", "all"}:
+        manifests["cases"] = write_cases(
+            build_cases(paths["development"], paths["holdout"], tool_contract),
+            paths["cases"],
+        )
+    return manifests
 
 
 def main() -> None:
@@ -55,6 +71,7 @@ def main() -> None:
         default=DEFAULT_TOOL_CONTRACT,
     )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--stage", choices=PHASE1_STAGES, default="all")
     args = parser.parse_args()
 
     manifests = build_phase1(
@@ -62,13 +79,15 @@ def main() -> None:
         args.holdout_config,
         args.tool_contract,
         args.output_root,
+        args.stage,
     )
-    print(
-        "Built Phase 1 artifacts: "
-        f"development={manifests['development']['dataset_id']}, "
-        f"holdout={manifests['holdout']['dataset_id']}, "
-        f"cases={manifests['cases']['case_set_id']}"
-    )
+    identifiers = []
+    if "development" in manifests:
+        identifiers.append(f"development={manifests['development']['dataset_id']}")
+        identifiers.append(f"holdout={manifests['holdout']['dataset_id']}")
+    if "cases" in manifests:
+        identifiers.append(f"cases={manifests['cases']['case_set_id']}")
+    print(f"Built Phase 1 {args.stage} artifacts: {', '.join(identifiers)}")
 
 
 if __name__ == "__main__":
