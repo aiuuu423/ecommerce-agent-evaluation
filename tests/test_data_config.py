@@ -11,7 +11,8 @@ from app.data.config import (
     load_data_config_with_sha256,
 )
 
-CONFIG = Path("configs/data/synthetic_v1.yaml")
+ROOT = Path(__file__).parents[1]
+CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
 
 
 def minimal_config(**overrides: object) -> dict[str, object]:
@@ -104,6 +105,48 @@ def test_anomaly_product_id_uses_dataset_schema_contract() -> None:
 
 def test_config_sha256_hashes_the_versioned_yaml_bytes() -> None:
     assert config_sha256(CONFIG) == sha256(CONFIG.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "2.0"),
+        ("source_label", "External E-commerce Data"),
+    ],
+)
+def test_schema_metadata_only_accepts_the_declared_literals(
+    field: str, value: str
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        SyntheticDataConfig.model_validate(minimal_config(**{field: value}))
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == (field,)
+    assert error["type"] == "literal_error"
+
+
+@pytest.mark.parametrize("field", ["categories", "regions", "channels"])
+@pytest.mark.parametrize("blank", ["", " \t"])
+def test_dimension_values_reject_blank_strings(field: str, blank: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        SyntheticDataConfig.model_validate(minimal_config(**{field: [blank]}))
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == (field, 0)
+    assert error["type"] == "string_pattern_mismatch"
+
+
+@pytest.mark.parametrize("field", ["categories", "regions", "channels"])
+def test_dimension_values_must_be_unique(field: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        SyntheticDataConfig.model_validate(
+            minimal_config(**{field: ["duplicate", "duplicate"]})
+        )
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == (field,)
+    assert error["type"] == "value_error"
+    assert str(error["ctx"]["error"]) == f"{field} values must be unique"
 
 
 @pytest.mark.parametrize(
@@ -213,6 +256,8 @@ def test_anomaly_multiplier_must_match_kind(kind: str, multiplier: float) -> Non
     [
         ("seed", -1, "greater_than_equal"),
         ("seed", 2**32, "less_than_equal"),
+        ("days", 59, "greater_than_equal"),
+        ("days", 367, "less_than_equal"),
         ("product_count", 6, "greater_than_equal"),
         ("product_count", 1000, "less_than_equal"),
         ("customer_count", 19, "greater_than_equal"),
@@ -235,6 +280,8 @@ def test_generation_counts_and_seed_enforce_supported_bounds(
     [
         ("seed", 0),
         ("seed", 2**32 - 1),
+        ("days", 60),
+        ("days", 366),
         ("product_count", 7),
         ("product_count", 999),
         ("customer_count", 20),

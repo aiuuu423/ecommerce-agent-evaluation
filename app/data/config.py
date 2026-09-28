@@ -1,10 +1,17 @@
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from app.data.schemas import ProductId
 
@@ -25,6 +32,7 @@ DROP_ANOMALY_KINDS = {
     "multi_factor_drop",
 }
 INCREASE_ANOMALY_KINDS = {"high_refund", "extreme_traffic_spike"}
+NonBlankString = Annotated[str, Field(pattern=r"\S")]
 
 
 class AnomalyConfig(BaseModel):
@@ -52,17 +60,26 @@ class SyntheticDataConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_version: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-    schema_version: str = "1.0"
-    source_label: str = "Synthetic E-commerce Data"
+    schema_version: Literal["1.0"] = "1.0"
+    source_label: Literal["Synthetic E-commerce Data"] = "Synthetic E-commerce Data"
     seed: int = Field(ge=0, le=2**32 - 1)
     start_date: date
-    days: int = Field(ge=60)
+    days: int = Field(ge=60, le=366)
     product_count: int = Field(ge=7, le=999)
     customer_count: int = Field(ge=20, le=9999)
-    categories: list[str] = Field(min_length=1)
-    regions: list[str] = Field(min_length=1)
-    channels: list[str] = Field(min_length=1)
+    categories: list[NonBlankString] = Field(min_length=1)
+    regions: list[NonBlankString] = Field(min_length=1)
+    channels: list[NonBlankString] = Field(min_length=1)
     anomalies: list[AnomalyConfig]
+
+    @field_validator("categories", "regions", "channels")
+    @classmethod
+    def validate_unique_dimensions(
+        cls, values: list[str], info: ValidationInfo
+    ) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError(f"{info.field_name} values must be unique")
+        return values
 
     @model_validator(mode="after")
     def validate_anomaly_ranges(self) -> "SyntheticDataConfig":
