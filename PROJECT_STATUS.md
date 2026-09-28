@@ -4,10 +4,11 @@
 
 `PHASE 1 — 模拟数据与 Evaluation Dataset`
 
-状态：`In Progress / Task 11 Completed / Task 12 Not Started`
+状态：`In Progress / Task 11 Committed / Latest Validation Failed / Task 12 Not Started`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
-100 个冻结 Evaluation Cases；Task 11 已完成，Task 12 尚未开始。
+100 个冻结 Evaluation Cases；Task 11 产物已提交，但最近一次可重复性验证失败，
+Task 12 尚未开始。
 
 ## Completed
 
@@ -41,7 +42,7 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 | 项目 | 当前状态 |
 |---|---|
 | Synthetic Dataset | Completed / Validated |
-| Evaluation Dataset | Completed / Validated |
+| Evaluation Dataset | Committed / Validation Failed |
 | Baseline Experiment | Pending / Not Run |
 | Optimized Experiment | Pending / Not Run |
 | A/B Metrics | Pending / Not Run |
@@ -72,12 +73,15 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 
 ## Validation
 
-- Task 11 定向测试：`71 passed`。
-- Development Dataset ID：`e1e81533c25e03e5`。
+- Task 11 定向测试：`72 passed, 1 failed`（共 73 项）。
+- Development Dataset ID：`da755e1b53de45ad`。
 - Holdout Dataset ID：`c17d4926cfa7cb26`。
-- Case Set ID：`5e250d180ca6552c`；JSONL SHA-256：
-  `dbeab9fc9466d71fb4a425b01ccc4709674c81fe361839896d4799fcb84babae`。
-- 全量测试：`342 passed`。
+- Case Set ID：`6683c9b3a25c5776`；JSONL SHA-256：
+  `03dffa499a8d4cd0415da070cfdb9e439e401229e9a7d67a0e2be9f56b8c8a62`。
+- Task 11 提交状态：评测 JSONL 与 Manifest 已提交，来源提交 `18521b8`。
+- 全量测试：`343 passed, 1 failed`（共 344 项）。
+- 最近失败：`test_committed_case_snapshot_is_frozen_from_both_configs`，重建的
+  Development Dataset ID 为 `e1e81533c25e03e5`，与已提交 Manifest 不一致。
 - Ruff：`All checks passed`。
 
 ## Next Step
