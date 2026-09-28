@@ -167,6 +167,35 @@ def test_catalog_rejects_external_scans(dataset_dir: Path, tmp_path: Path) -> No
             catalog.execute(f"select * from read_csv('{external}')")
 
 
+def test_catalog_exposes_read_only_description_for_gold_style_query(
+    dataset_dir: Path,
+) -> None:
+    with open_dataset(dataset_dir) as catalog:
+        relation = catalog.execute(
+            """
+            with product_totals as (
+                select product_id, count(*) as order_count
+                from orders
+                group by product_id
+            )
+            select product_id, order_count
+            from product_totals
+            order by product_id
+            limit 1
+            """
+        )
+
+        assert [column[0] for column in relation.description] == [
+            "product_id",
+            "order_count",
+        ]
+        assert relation.fetchall()[0][0] == "P001"
+        with pytest.raises(AttributeError):
+            relation.description = ()
+        with pytest.raises(PermissionError, match="read-only"):
+            relation.execute("delete from orders")
+
+
 def test_catalog_context_manager_closes_connection(dataset_dir: Path) -> None:
     with open_dataset(dataset_dir) as catalog:
         assert catalog.execute("select 1").fetchone() == (1,)

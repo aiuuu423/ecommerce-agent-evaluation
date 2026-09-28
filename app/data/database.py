@@ -163,6 +163,15 @@ class Catalog:
             self.__connection.execute(query, parameters)
         return self
 
+    @property
+    def description(self) -> tuple[tuple[Any, ...], ...] | None:
+        if self.__closed:
+            raise ValueError("catalog is closed")
+        description = self.__connection.description
+        if description is None:
+            return None
+        return tuple(tuple(column) for column in description)
+
     def fetchone(self) -> tuple[Any, ...] | None:
         if self.__closed:
             raise ValueError("catalog is closed")
