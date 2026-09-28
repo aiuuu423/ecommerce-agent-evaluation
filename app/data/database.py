@@ -2,8 +2,10 @@ import io
 import json
 import os
 import stat
+from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import duckdb
@@ -23,6 +25,14 @@ _QUALITY_KEYS = {
     "schema_errors",
     "row_counts",
 }
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
 
 
 def _load_json_object(data: bytes, label: str) -> dict[str, Any]:
@@ -142,9 +152,11 @@ class Catalog:
         self,
         connection: duckdb.DuckDBPyConnection,
         tables: dict[str, pd.DataFrame],
+        manifest: dict[str, Any],
     ) -> None:
         self.__connection = connection
         self.__tables = tables
+        self.__manifest = _freeze(manifest)
         self.__closed = False
 
     def execute(
@@ -162,6 +174,10 @@ class Catalog:
         else:
             self.__connection.execute(query, parameters)
         return self
+
+    @property
+    def manifest(self) -> Mapping[str, Any]:
+        return self.__manifest
 
     @property
     def description(self) -> tuple[tuple[Any, ...], ...] | None:
@@ -219,7 +235,7 @@ def open_dataset(dataset_dir: Path | str) -> Catalog:
     try:
         for name, frame in tables.items():
             connection.register(name, frame)
-        return Catalog(connection, tables)
+        return Catalog(connection, tables, manifest)
     except BaseException:
         connection.close()
         raise

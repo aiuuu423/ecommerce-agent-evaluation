@@ -1,48 +1,90 @@
 with bounds as (
-  select max(date) as max_date
+  select
+    max(date) as as_of_date,
+    cast(max(date) - interval 29 day as date) as current_start,
+    max(date) as current_end,
+    cast(max(date) - interval 59 day as date) as previous_start,
+    cast(max(date) - interval 30 day as date) as previous_end
   from traffic
+),
+periods(period, period_start, period_end) as (
+  select 'current', current_start, current_end from bounds
+  union all
+  select 'previous', previous_start, previous_end from bounds
+),
+product_periods as (
+  select products.product_id, periods.*
+  from products
+  cross join periods
 ),
 traffic_periods as (
   select
-    product_id,
-    case
-      when date between max_date - interval 29 day and max_date then 'current'
-      when date between max_date - interval 59 day and max_date - interval 30 day
-        then 'previous'
-    end as period,
-    sum(visits) as visits
-  from traffic, bounds
-  where date between max_date - interval 59 day and max_date
-    and not is_missing
-  group by product_id, period
+    product_periods.product_id,
+    product_periods.period,
+    count(traffic.date) filter (where not traffic.is_missing) as observed_days,
+    coalesce(sum(traffic.visits) filter (where not traffic.is_missing), 0) as visits
+  from product_periods
+  left join traffic
+    on traffic.product_id = product_periods.product_id
+    and traffic.date between product_periods.period_start and product_periods.period_end
+  group by product_periods.product_id, product_periods.period
 ),
 order_periods as (
   select
-    product_id,
-    case
-      when order_date between max_date - interval 29 day and max_date then 'current'
-      when order_date between max_date - interval 59 day and max_date - interval 30 day
-        then 'previous'
-    end as period,
-    count(distinct order_id) as orders
-  from orders, bounds
-  where order_date between max_date - interval 59 day and max_date
-  group by product_id, period
+    product_periods.product_id,
+    product_periods.period,
+    count(distinct orders.order_id) as orders
+  from product_periods
+  left join orders
+    on orders.product_id = product_periods.product_id
+    and orders.order_date between product_periods.period_start and product_periods.period_end
+  group by product_periods.product_id, product_periods.period
 ),
-combined as (
+period_metrics as (
   select
     traffic_periods.product_id,
     traffic_periods.period,
-    order_periods.orders / nullif(traffic_periods.visits, 0) as cvr
+    traffic_periods.observed_days,
+    traffic_periods.visits,
+    order_periods.orders,
+    case
+      when traffic_periods.observed_days = 30
+        then order_periods.orders / nullif(traffic_periods.visits, 0)
+    end as cvr
   from traffic_periods
   join order_periods using (product_id, period)
+),
+product_metrics as (
+  select
+    product_id,
+    max(cvr) filter (where period = 'current') as current_cvr,
+    max(cvr) filter (where period = 'previous') as previous_cvr,
+    max(orders) filter (where period = 'current') as current_orders,
+    max(orders) filter (where period = 'previous') as previous_orders,
+    max(visits) filter (where period = 'current') as current_visits,
+    max(visits) filter (where period = 'previous') as previous_visits,
+    max(observed_days) filter (where period = 'current') as current_observed_days,
+    max(observed_days) filter (where period = 'previous') as previous_observed_days
+  from period_metrics
+  group by product_id
 )
 select
+  as_of_date,
+  current_start,
+  current_end,
+  previous_start,
+  previous_end,
   product_id,
-  max(case when period = 'current' then cvr end) as current_cvr,
-  max(case when period = 'previous' then cvr end) as previous_cvr,
-  current_cvr - previous_cvr as cvr_change
-from combined
-group by product_id
-order by cvr_change asc nulls last, product_id
+  current_cvr,
+  previous_cvr,
+  current_cvr - previous_cvr as cvr_change,
+  current_orders,
+  previous_orders,
+  current_visits,
+  previous_visits,
+  current_observed_days,
+  previous_observed_days
+from product_metrics, bounds
+where current_cvr - previous_cvr < 0
+order by cvr_change asc, product_id
 limit 10;

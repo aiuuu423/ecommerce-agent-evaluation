@@ -272,7 +272,6 @@ def test_rejects_overlapping_anomaly_windows_for_same_product_and_effect_dimensi
 @pytest.mark.parametrize(
     ("first_kind", "second_kind", "effect_dimension"),
     [
-        ("sales_drop", "conversion_drop", "conversion"),
         ("traffic_drop", "multi_factor_drop", "traffic"),
         ("conversion_drop", "multi_factor_drop", "conversion"),
     ],
@@ -323,6 +322,22 @@ def test_allows_non_conflicting_anomaly_windows(
     )
 
     assert len(config.anomalies) == 2
+
+
+def test_sales_and_conversion_drop_can_overlap_as_independent_effects() -> None:
+    config = SyntheticDataConfig.model_validate(
+        minimal_config(
+            anomalies=[
+                anomaly_data(kind="sales_drop"),
+                anomaly_data(anomaly_id="A2", kind="conversion_drop"),
+            ]
+        )
+    )
+
+    assert [anomaly.kind for anomaly in config.anomalies] == [
+        "sales_drop",
+        "conversion_drop",
+    ]
 
 
 @pytest.mark.parametrize("multiplier", [float("nan"), float("inf"), float("-inf")])

@@ -161,6 +161,7 @@ def _anomaly_effects(
     effects: dict[str, float | bool] = {
         "traffic_multiplier": 1.0,
         "conversion_multiplier": 1.0,
+        "aov_multiplier": 1.0,
         "refund_multiplier": 1.0,
         "missing_traffic": False,
     }
@@ -173,7 +174,9 @@ def _anomaly_effects(
             continue
         if anomaly.kind in {"traffic_drop", "extreme_traffic_spike"}:
             effects["traffic_multiplier"] *= anomaly.multiplier
-        elif anomaly.kind in {"sales_drop", "conversion_drop"}:
+        elif anomaly.kind == "sales_drop":
+            effects["aov_multiplier"] *= anomaly.multiplier
+        elif anomaly.kind == "conversion_drop":
             effects["conversion_multiplier"] *= anomaly.multiplier
         elif anomaly.kind == "high_refund":
             effects["refund_multiplier"] *= anomaly.multiplier
@@ -307,6 +310,10 @@ def _generate_order_rows(
         (0.035 + (product_number % 3) * 0.01)
         * float(effects["refund_multiplier"]),
     )
+    effective_unit_price = (unit_price * Decimal(str(effects["aov_multiplier"]))).quantize(
+        CENT,
+        rounding=ROUND_HALF_UP,
+    )
     rows: list[dict[str, object]] = []
     for order_sequence in range(1, order_count + 1):
         customer_number = int(
@@ -343,8 +350,11 @@ def _generate_order_rows(
             customer_id=f"C{customer_number:04d}",
             order_date=current_date,
             quantity=quantity,
-            unit_price=unit_price,
-            revenue=(unit_price * quantity).quantize(CENT, rounding=ROUND_HALF_UP),
+            unit_price=effective_unit_price,
+            revenue=(effective_unit_price * quantity).quantize(
+                CENT,
+                rounding=ROUND_HALF_UP,
+            ),
             is_refund=is_refund,
             status="refunded" if is_refund else "paid",
         )

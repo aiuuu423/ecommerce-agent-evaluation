@@ -196,6 +196,19 @@ def test_catalog_exposes_read_only_description_for_gold_style_query(
             relation.execute("delete from orders")
 
 
+def test_catalog_exposes_verified_manifest_as_read_only_metadata(
+    dataset_dir: Path,
+) -> None:
+    expected = _manifest(dataset_dir)
+
+    with open_dataset(dataset_dir) as catalog:
+        assert dict(catalog.manifest) == expected
+        with pytest.raises(TypeError):
+            catalog.manifest["dataset_id"] = "0" * 16
+        with pytest.raises(TypeError):
+            catalog.manifest["tables"]["products"]["rows"] = 0
+
+
 def test_catalog_context_manager_closes_connection(dataset_dir: Path) -> None:
     with open_dataset(dataset_dir) as catalog:
         assert catalog.execute("select 1").fetchone() == (1,)

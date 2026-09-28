@@ -1,0 +1,12 @@
+{
+  "as_of_date": "2026-03-01",
+  "products": [
+    {"product_id": "P001", "previous_visits": 300, "current_visits": 300, "previous_orders": 6, "current_orders": 3, "previous_revenue": 600, "current_revenue": 300},
+    {"product_id": "P002", "previous_visits": 300, "current_visits": 300, "previous_orders": 2, "current_orders": 0, "previous_revenue": 200, "current_revenue": 0},
+    {"product_id": "P003", "previous_visits": 300, "current_visits": 290, "previous_orders": 3, "current_orders": 2, "previous_revenue": 300, "current_revenue": 200, "current_missing_days": 1},
+    {"product_id": "P004", "previous_visits": 300, "current_visits": 300, "previous_orders": 25, "current_orders": 25, "previous_revenue": 2500, "current_revenue": 2500, "current_refunds": 3},
+    {"product_id": "P005", "previous_visits": 300, "current_visits": 300, "previous_orders": 6, "current_orders": 3, "previous_revenue": 600, "current_revenue": 300},
+    {"product_id": "P006", "previous_visits": 0, "current_visits": 0, "previous_orders": 0, "current_orders": 0, "previous_revenue": 0, "current_revenue": 0, "current_missing_days": 1},
+    {"product_id": "P007", "previous_visits": 300, "current_visits": 300, "previous_orders": 6, "current_orders": 6, "previous_revenue": 600, "current_revenue": 300}
+  ]
+}

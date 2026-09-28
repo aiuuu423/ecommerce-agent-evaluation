@@ -375,23 +375,23 @@ def test_anomaly_window_uses_all_four_inclusive_boundaries() -> None:
     anomaly = config.anomalies[0]
 
     assert _anomaly_effects(config, anomaly.product_id, anomaly.start_day - 1)[
-        "conversion_multiplier"
+        "aov_multiplier"
     ] == pytest.approx(1.0)
     assert _anomaly_effects(config, anomaly.product_id, anomaly.start_day)[
-        "conversion_multiplier"
+        "aov_multiplier"
     ] == pytest.approx(anomaly.multiplier)
     assert _anomaly_effects(config, anomaly.product_id, anomaly.end_day)[
-        "conversion_multiplier"
+        "aov_multiplier"
     ] == pytest.approx(anomaly.multiplier)
     assert _anomaly_effects(config, anomaly.product_id, anomaly.end_day + 1)[
-        "conversion_multiplier"
+        "aov_multiplier"
     ] == pytest.approx(1.0)
 
 
 def test_all_seven_configured_anomaly_kinds_map_to_expected_effects() -> None:
     config = load_data_config(CONFIG)
     expected_effects = {
-        "sales_drop": {"conversion_multiplier": 0.55},
+        "sales_drop": {"aov_multiplier": 0.55},
         "traffic_drop": {"traffic_multiplier": 0.55},
         "conversion_drop": {"conversion_multiplier": 0.50},
         "high_refund": {"refund_multiplier": 4.00},
@@ -408,6 +408,30 @@ def test_all_seven_configured_anomaly_kinds_map_to_expected_effects() -> None:
         effects = _anomaly_effects(config, anomaly.product_id, anomaly.start_day)
         for effect, expected in expected_effects[anomaly.kind].items():
             assert effects[effect] == expected
+
+
+def test_sales_drop_changes_only_gmv_and_aov_mechanism() -> None:
+    config = load_data_config(CONFIG)
+    anomaly = next(item for item in config.anomalies if item.kind == "sales_drop")
+    actual = generate_dataset(config.model_copy(update={"anomalies": [anomaly]}))
+    counterfactual = generate_dataset(config.model_copy(update={"anomalies": []}))
+    start = config.start_date + timedelta(days=anomaly.start_day)
+    end = config.start_date + timedelta(days=anomaly.end_day)
+
+    actual_orders = actual["orders"][
+        (actual["orders"]["product_id"] == anomaly.product_id)
+        & actual["orders"]["order_date"].between(start, end)
+    ]
+    counterfactual_orders = counterfactual["orders"][
+        (counterfactual["orders"]["product_id"] == anomaly.product_id)
+        & counterfactual["orders"]["order_date"].between(start, end)
+    ]
+
+    assert_frame_equal(actual["traffic"], counterfactual["traffic"])
+    assert actual_orders["order_id"].tolist() == counterfactual_orders["order_id"].tolist()
+    assert actual_orders["quantity"].tolist() == counterfactual_orders["quantity"].tolist()
+    assert actual_orders["revenue"].sum() < counterfactual_orders["revenue"].sum()
+    assert actual_orders["revenue"].mean() < counterfactual_orders["revenue"].mean()
 
 
 def test_configured_anomalies_are_observable_in_generated_facts() -> None:
@@ -438,7 +462,10 @@ def test_configured_anomalies_are_observable_in_generated_facts() -> None:
     def conversion(frame_orders, frame_traffic, product_id):
         return order_count(frame_orders, product_id) / visits(frame_traffic, product_id)
 
-    assert order_count(current_orders, "P001") < order_count(previous_orders, "P001")
+    current_p001 = current_orders[current_orders["product_id"] == "P001"]
+    previous_p001 = previous_orders[previous_orders["product_id"] == "P001"]
+    assert current_p001["revenue"].sum() < previous_p001["revenue"].sum()
+    assert current_p001["revenue"].mean() < previous_p001["revenue"].mean()
     assert visits(current_traffic, "P002") < visits(previous_traffic, "P002")
     assert conversion(current_orders, current_traffic, "P003") < conversion(
         previous_orders, previous_traffic, "P003"

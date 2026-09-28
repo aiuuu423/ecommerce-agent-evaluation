@@ -1,4 +1,3 @@
-import json
 import math
 from datetime import date, datetime
 from decimal import Decimal
@@ -49,11 +48,8 @@ def _records(catalog: Catalog, sql_path: Path) -> list[dict[str, Any]]:
 
 
 def build_gold_bundle(dataset_dir: Path | str) -> dict[str, Any]:
-    directory = Path(dataset_dir)
-    with open_dataset(directory) as catalog:
-        manifest = json.loads(
-            (directory / "manifest.json").read_text(encoding="utf-8")
-        )
+    with open_dataset(dataset_dir) as catalog:
+        manifest = catalog.manifest
         tasks: dict[str, dict[str, Any]] = {}
         for task_name, filename in TASK_SQL.items():
             records = _records(catalog, SQL_DIRECTORY / filename)

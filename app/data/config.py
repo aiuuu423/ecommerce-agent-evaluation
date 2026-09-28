@@ -24,7 +24,7 @@ AnomalyKind = Literal[
     "extreme_traffic_spike",
     "multi_factor_drop",
 ]
-EffectDimension = Literal["traffic", "conversion", "refund", "observation"]
+EffectDimension = Literal["traffic", "conversion", "aov", "refund", "observation"]
 
 DROP_ANOMALY_KINDS = {
     "sales_drop",
@@ -34,7 +34,7 @@ DROP_ANOMALY_KINDS = {
 }
 INCREASE_ANOMALY_KINDS = {"high_refund", "extreme_traffic_spike"}
 ANOMALY_EFFECT_DIMENSIONS: dict[AnomalyKind, frozenset[EffectDimension]] = {
-    "sales_drop": frozenset({"conversion"}),
+    "sales_drop": frozenset({"aov"}),
     "traffic_drop": frozenset({"traffic"}),
     "conversion_drop": frozenset({"conversion"}),
     "high_refund": frozenset({"refund"}),
