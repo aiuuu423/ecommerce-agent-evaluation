@@ -2701,7 +2701,7 @@ git commit -m "feat(evaluation-data): freeze isolated split case set"
 - Create: `notebooks/01_data_exploration.ipynb`
 - Create: `tests/test_notebook.py`
 
-- [ ] **Step 1: 写 Notebook 结构失败测试**
+- [x] **Step 1: 写 Notebook 结构失败测试**
 
 `tests/test_notebook.py`：
 
@@ -2732,7 +2732,7 @@ def test_notebook_contains_no_hard_coded_evaluation_results() -> None:
     assert "准确率提升" not in content
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -2742,7 +2742,7 @@ python3 -m pytest tests/test_notebook.py -v
 
 Expected: FAIL，因为 Notebook 尚不存在。
 
-- [ ] **Step 3: 创建只读探索 Notebook**
+- [x] **Step 3: 创建只读探索 Notebook**
 
 使用 `nbformat` 创建 Notebook，固定包含以下 Cell：
 
@@ -2798,7 +2798,7 @@ nbf.write(nb, "notebooks/01_data_exploration.ipynb")
 
 该创建代码只在本步骤执行，不保存为项目脚本。Notebook 不保存执行输出，避免提交机器相关状态。
 
-- [ ] **Step 4: 运行 Notebook 结构测试**
+- [x] **Step 4: 运行 Notebook 结构测试**
 
 Run:
 
@@ -2808,7 +2808,7 @@ python3 -m pytest tests/test_notebook.py -v
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交 Notebook**
+- [x] **Step 5: 提交 Notebook**
 
 ```bash
 git add notebooks/01_data_exploration.ipynb tests/test_notebook.py

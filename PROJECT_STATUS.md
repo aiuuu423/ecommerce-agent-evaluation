@@ -4,11 +4,11 @@
 
 `PHASE 1 — 模拟数据与 Evaluation Dataset`
 
-状态：`In Progress / Task 11 Completed / Validated / Task 12 Not Started`
+状态：`In Progress / Task 12 Completed / Validated / Task 13 Not Started`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
-100 个冻结 Evaluation Cases；快照身份现已绑定生成器源码，Task 11 已完成并通过
-全量验证，Task 12 尚未开始。
+100 个冻结 Evaluation Cases；快照身份现已绑定生成器源码，只读数据探索 Notebook
+已完成并通过验证，Task 13 尚未开始。
 
 ## Completed
 
@@ -31,10 +31,10 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - [x] 冻结 100 个 Evaluation Cases（每任务 14/6 Split、每能力 10）。
 - [x] 版本化评测工具契约并修正 GMV、Next-week 与 Adversarial 工具路径。
 - [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
+- [x] 建立只读数据探索 Notebook，并隔离 Holdout 查询句柄。
 
 ## Pending
 
-- [ ] 建立数据探索 Notebook。
 - [ ] 完成 Phase 1 文档、全量验证与阶段收尾。
 
 ## Evaluation Results
@@ -80,10 +80,11 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
   `09d6bdcff63ca536277f52a3b17fb7df4d7bb2063399ea47576689643371b630`。
 - Case Set ID：`35d8734343a1492d`；JSONL SHA-256：
   `4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea`。
-- 全量测试：`345 passed`。
+- Task 12 Notebook 定向测试：`6 passed`。
+- 全量测试：`353 passed`。
 - CLI：Development、Holdout 与 Evaluation Cases 均成功幂等复用当前冻结快照。
-- Ruff：`All checks passed`。
+- Ruff（含 Notebook）：`All checks passed`。
 
 ## Next Step
 
-执行 Task 12，建立只读数据探索 Notebook；不提前实现 Phase 2 工具。
+执行 Task 13，完成 Phase 1 端到端质量门禁；不提前实现 Phase 2 工具。
