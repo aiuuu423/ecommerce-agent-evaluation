@@ -1,5 +1,6 @@
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
@@ -17,24 +18,29 @@ TABLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "marketing": MarketingRow,
     "orders": OrderRow,
 }
+CENT = Decimal("0.01")
+FINAL_ORDER_STATUSES = {"paid", "refunded"}
 
 
-def _normalized_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    return [
-        {key: None if pd.isna(value) else value for key, value in row.items()}
-        for row in frame.to_dict(orient="records")
-    ]
+def _normalized_records(
+    frame: pd.DataFrame,
+) -> Iterator[tuple[Any, dict[str, Any]]]:
+    for row_index, row in frame.iterrows():
+        normalized = {
+            key: None if pd.isna(value) else value for key, value in row.items()
+        }
+        yield row_index, normalized
 
 
 def calculate_hand_checked_metrics(
     payload: Mapping[str, Any],
-) -> dict[str, float | int | None]:
-    orders = payload["orders"]
-    gmv = sum(
-        row["revenue"]
-        for row in orders
-        if row["status"] in {"paid", "refunded"}
-    )
+) -> dict[str, float | Decimal | int | None]:
+    orders = [
+        row
+        for row in payload["orders"]
+        if row["status"] in FINAL_ORDER_STATUSES
+    ]
+    gmv = sum(row["revenue"] for row in orders)
     order_count = len({row["order_id"] for row in orders})
     refund_count = sum(row["is_refund"] for row in orders)
     traffic = payload["traffic"]
@@ -72,6 +78,8 @@ def _has_broken_fk(
 def _has_exact_daily_grain(
     frame: pd.DataFrame,
     config: SyntheticDataConfig,
+    *,
+    allow_multiple: bool = False,
 ) -> bool:
     key_columns = ("date", "product_id")
     if not _has_columns(frame, key_columns):
@@ -85,16 +93,50 @@ def _has_exact_daily_grain(
         for product_number in range(1, config.product_count + 1)
     }
     actual = set(frame.loc[:, list(key_columns)].itertuples(index=False, name=None))
-    return len(frame) == len(expected) and actual == expected
+    return actual == expected and (allow_multiple or len(frame) == len(expected))
 
 
-def _schema_is_valid(frame: pd.DataFrame, model: type[BaseModel]) -> bool:
-    try:
-        for row in _normalized_records(frame):
+def _schema_errors(
+    table_name: str,
+    frame: pd.DataFrame,
+    model: type[BaseModel],
+) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for row_index, row in _normalized_records(frame):
+        try:
             model.model_validate(row)
-    except (TypeError, ValidationError):
+        except ValidationError as exc:
+            for error in exc.errors(include_url=False):
+                details.append(
+                    {
+                        "table": table_name,
+                        "row_index": row_index,
+                        "location": list(error["loc"]),
+                        "type": error["type"],
+                        "message": error["msg"],
+                    }
+                )
+        except TypeError as exc:
+            details.append(
+                {
+                    "table": table_name,
+                    "row_index": row_index,
+                    "location": [],
+                    "type": "type_error",
+                    "message": str(exc),
+                }
+            )
+    return details
+
+
+def _has_exact_dimension_ids(
+    frame: pd.DataFrame,
+    id_column: str,
+    expected_ids: set[str],
+) -> bool:
+    if id_column not in frame:
         return False
-    return True
+    return len(frame) == len(expected_ids) and set(frame[id_column]) == expected_ids
 
 
 def _funnel_is_valid(
@@ -117,9 +159,16 @@ def _revenue_identity_is_valid(orders: pd.DataFrame) -> bool:
     if not _has_columns(orders, columns):
         return False
     try:
-        expected = orders["quantity"] * orders["unit_price"]
-        return bool(orders["revenue"].eq(expected).all())
-    except TypeError:
+        for row in orders.loc[:, list(columns)].itertuples(index=False):
+            revenue = Decimal(str(row.revenue)).quantize(CENT, rounding=ROUND_HALF_UP)
+            expected = (Decimal(str(row.unit_price)) * Decimal(str(row.quantity))).quantize(
+                CENT,
+                rounding=ROUND_HALF_UP,
+            )
+            if revenue != expected:
+                return False
+        return True
+    except (InvalidOperation, TypeError, ValueError):
         return False
 
 
@@ -127,11 +176,13 @@ def _report(
     tables: Mapping[str, pd.DataFrame],
     config: SyntheticDataConfig,
     failed_checks: list[str],
+    schema_errors: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "status": "pass" if not failed_checks else "fail",
         "source_label": config.source_label,
         "failed_checks": failed_checks,
+        "schema_errors": schema_errors,
         "row_counts": {
             name: len(tables[name]) if name in tables else None for name in TABLE_NAMES
         },
@@ -143,13 +194,20 @@ def validate_dataset(
     config: SyntheticDataConfig,
 ) -> dict[str, Any]:
     failed: list[str] = []
+    schema_errors: list[dict[str, Any]] = []
     if set(tables) != set(TABLE_NAMES):
         failed.append("required_tables")
-        return _report(tables, config, failed)
+        return _report(tables, config, failed, schema_errors)
 
     for table_name in TABLE_NAMES:
-        if not _schema_is_valid(tables[table_name], TABLE_SCHEMAS[table_name]):
+        table_errors = _schema_errors(
+            table_name,
+            tables[table_name],
+            TABLE_SCHEMAS[table_name],
+        )
+        if table_errors:
             failed.append(f"{table_name}_schema")
+            schema_errors.extend(table_errors)
 
     primary_keys = (
         ("products", ("product_id",), "product_id_unique"),
@@ -165,6 +223,28 @@ def validate_dataset(
     for table_name, columns, check_name in primary_keys:
         if _has_duplicate_key(tables[table_name], columns):
             failed.append(check_name)
+
+    expected_products = {
+        f"P{product_number:03d}"
+        for product_number in range(1, config.product_count + 1)
+    }
+    if not _has_exact_dimension_ids(
+        tables["products"],
+        "product_id",
+        expected_products,
+    ):
+        failed.append("product_dimension_ids")
+
+    expected_customers = {
+        f"C{customer_number:04d}"
+        for customer_number in range(1, config.customer_count + 1)
+    }
+    if not _has_exact_dimension_ids(
+        tables["customers"],
+        "customer_id",
+        expected_customers,
+    ):
+        failed.append("customer_dimension_ids")
 
     foreign_keys = (
         ("traffic", "product_id", "products", "product_id", "traffic_product_fk"),
@@ -187,9 +267,14 @@ def validate_dataset(
         ):
             failed.append(check_name)
 
-    for table_name in ("traffic", "marketing"):
-        if not _has_exact_daily_grain(tables[table_name], config):
-            failed.append(f"{table_name}_daily_grain")
+    if not _has_exact_daily_grain(tables["traffic"], config):
+        failed.append("traffic_daily_grain")
+    if not _has_exact_daily_grain(
+        tables["marketing"],
+        config,
+        allow_multiple=True,
+    ):
+        failed.append("marketing_daily_grain")
 
     if not _funnel_is_valid(tables["traffic"], "impressions", "clicks"):
         failed.append("traffic_funnel_impressions_clicks")
@@ -198,4 +283,4 @@ def validate_dataset(
     if not _revenue_identity_is_valid(tables["orders"]):
         failed.append("order_revenue_identity")
 
-    return _report(tables, config, failed)
+    return _report(tables, config, failed, schema_errors)

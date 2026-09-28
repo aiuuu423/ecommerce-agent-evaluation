@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -13,7 +14,13 @@ from app.data.validation import calculate_hand_checked_metrics, validate_dataset
 ROOT = Path(__file__).parents[1]
 CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
 HAND_CHECKED_METRICS = ROOT / "tests/fixtures/hand_checked_metrics.json"
-REPORT_KEYS = {"status", "source_label", "failed_checks", "row_counts"}
+REPORT_KEYS = {
+    "status",
+    "source_label",
+    "failed_checks",
+    "row_counts",
+    "schema_errors",
+}
 
 
 @pytest.fixture(scope="module")
@@ -51,10 +58,81 @@ def test_safe_divide_calculates_available_ratio() -> None:
     assert safe_divide(3, 4) == pytest.approx(0.75)
 
 
+@pytest.mark.parametrize(
+    ("numerator", "denominator", "expected"),
+    [
+        (Decimal("1.00"), Decimal("4.00"), Decimal("0.25")),
+        (Decimal("1.00"), 4.0, Decimal("0.25")),
+        (1.0, Decimal("4.00"), Decimal("0.25")),
+    ],
+)
+def test_safe_divide_supports_decimal_and_float_combinations(
+    numerator: float | Decimal,
+    denominator: float | Decimal,
+    expected: Decimal,
+) -> None:
+    assert safe_divide(numerator, denominator) == expected
+
+
+@pytest.mark.parametrize(
+    ("numerator", "denominator"),
+    [
+        (float("nan"), 1),
+        (1, float("nan")),
+        (float("inf"), 1),
+        (1, float("-inf")),
+        (Decimal("NaN"), Decimal("1")),
+        (Decimal("1"), Decimal("Infinity")),
+    ],
+)
+def test_safe_divide_returns_none_for_non_finite_values(
+    numerator: float | Decimal,
+    denominator: float | Decimal,
+) -> None:
+    assert safe_divide(numerator, denominator) is None
+
+
 def test_metrics_match_independent_hand_calculation() -> None:
     fixture = json.loads(HAND_CHECKED_METRICS.read_text(encoding="utf-8"))
 
     assert calculate_hand_checked_metrics(fixture) == fixture["expected"]
+
+
+def test_metrics_consistently_exclude_non_final_orders() -> None:
+    payload = {
+        "orders": [
+            {
+                "order_id": "paid",
+                "revenue": 100.0,
+                "is_refund": False,
+                "status": "paid",
+            },
+            {
+                "order_id": "refunded",
+                "revenue": 50.0,
+                "is_refund": True,
+                "status": "refunded",
+            },
+            {
+                "order_id": "cancelled",
+                "revenue": 900.0,
+                "is_refund": False,
+                "status": "cancelled",
+            },
+        ],
+        "traffic": {"impressions": 100, "clicks": 20, "visits": 10},
+        "marketing_spend": 50.0,
+    }
+
+    assert calculate_hand_checked_metrics(payload) == {
+        "gmv": 150.0,
+        "orders": 2,
+        "aov": 75.0,
+        "ctr": 0.2,
+        "cvr": 0.2,
+        "refund_rate": 0.5,
+        "roas": 3.0,
+    }
 
 
 def test_hand_checked_metrics_do_not_turn_missing_traffic_into_zero() -> None:
@@ -97,6 +175,7 @@ def test_report_shape_is_stable_when_a_required_table_is_missing(
     assert set(report) == REPORT_KEYS
     assert report["status"] == "fail"
     assert report["failed_checks"] == ["required_tables"]
+    assert report["schema_errors"] == []
     assert report["row_counts"] == {
         "products": len(incomplete["products"]),
         "customers": len(incomplete["customers"]),
@@ -130,6 +209,27 @@ def test_each_table_is_checked_against_its_schema(
     report = validate_dataset(changed_tables(generated_tables, corrupt), data_config)
 
     assert expected_check in report["failed_checks"]
+
+
+def test_schema_validation_reports_every_invalid_row_with_location(
+    data_config: SyntheticDataConfig,
+    generated_tables: dict[str, pd.DataFrame],
+) -> None:
+    def corrupt(tables: dict[str, pd.DataFrame]) -> None:
+        tables["products"].loc[tables["products"].index[0], "price"] = -1
+        tables["products"].loc[tables["products"].index[1], "cost"] = 0
+
+    report = validate_dataset(changed_tables(generated_tables, corrupt), data_config)
+
+    assert "products_schema" in report["failed_checks"]
+    assert [
+        (error["table"], error["row_index"], error["location"])
+        for error in report["schema_errors"]
+        if error["table"] == "products"
+    ] == [
+        ("products", 0, ["price"]),
+        ("products", 1, ["cost"]),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -206,6 +306,50 @@ def test_daily_fact_grain_requires_the_complete_configured_grid(
     assert f"{table_name}_daily_grain" in report["failed_checks"]
 
 
+def test_marketing_daily_grain_allows_multiple_campaigns_per_product_day(
+    data_config: SyntheticDataConfig,
+    generated_tables: dict[str, pd.DataFrame],
+) -> None:
+    def add_campaign(tables: dict[str, pd.DataFrame]) -> None:
+        extra = tables["marketing"].iloc[[0]].copy()
+        extra.loc[extra.index[0], "campaign_id"] = "M999"
+        tables["marketing"] = pd.concat(
+            [tables["marketing"], extra],
+            ignore_index=True,
+        )
+
+    report = validate_dataset(changed_tables(generated_tables, add_campaign), data_config)
+
+    assert "marketing_primary_key" not in report["failed_checks"]
+    assert "marketing_daily_grain" not in report["failed_checks"]
+
+
+@pytest.mark.parametrize(
+    ("table_name", "id_column", "replacement", "expected_check"),
+    [
+        ("products", "product_id", "P999", "product_dimension_ids"),
+        ("customers", "customer_id", "C9999", "customer_dimension_ids"),
+    ],
+)
+def test_dimensions_require_exact_configured_count_and_id_set(
+    data_config: SyntheticDataConfig,
+    generated_tables: dict[str, pd.DataFrame],
+    table_name: str,
+    id_column: str,
+    replacement: str,
+    expected_check: str,
+) -> None:
+    def replace_id(tables: dict[str, pd.DataFrame]) -> None:
+        tables[table_name].loc[tables[table_name].index[-1], id_column] = replacement
+
+    report = validate_dataset(
+        changed_tables(generated_tables, replace_id),
+        data_config,
+    )
+
+    assert expected_check in report["failed_checks"]
+
+
 @pytest.mark.parametrize(
     ("column", "value", "expected_check"),
     [
@@ -243,3 +387,21 @@ def test_order_amount_identity_is_checked(
     )
 
     assert "order_revenue_identity" in report["failed_checks"]
+
+
+def test_order_amount_identity_compares_money_at_two_decimal_places(
+    data_config: SyntheticDataConfig,
+    generated_tables: dict[str, pd.DataFrame],
+) -> None:
+    def use_float_values(tables: dict[str, pd.DataFrame]) -> None:
+        index = tables["orders"].index[0]
+        tables["orders"].loc[index, "quantity"] = 3
+        tables["orders"].loc[index, "unit_price"] = 0.1
+        tables["orders"].loc[index, "revenue"] = 0.3
+
+    report = validate_dataset(
+        changed_tables(generated_tables, use_float_values),
+        data_config,
+    )
+
+    assert "order_revenue_identity" not in report["failed_checks"]
