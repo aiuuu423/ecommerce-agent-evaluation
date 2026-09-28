@@ -2,17 +2,20 @@ from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
 from app.data import generator
 from app.data.config import load_data_config
 from app.data.generator import (
+    _anomaly_effects,
     _launch_date,
     generate_customers,
+    generate_dataset,
     generate_products,
 )
-from app.data.schemas import CustomerRow, ProductRow
+from app.data.schemas import CustomerRow, MarketingRow, OrderRow, ProductRow, TrafficRow
 
 ROOT = Path(__file__).parents[1]
 CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
@@ -207,3 +210,156 @@ def test_generated_dimensions_reuse_schema_and_config_contracts() -> None:
     assert all(
         isinstance(value, Decimal) for value in products[["price", "cost"]].stack()
     )
+
+
+def test_fact_tables_cover_the_complete_product_day_grid() -> None:
+    config = load_data_config(CONFIG)
+    tables = generate_dataset(config)
+    expected_grid = pd.MultiIndex.from_product(
+        [
+            pd.date_range(config.start_date, periods=config.days).date,
+            [f"P{number:03d}" for number in range(1, config.product_count + 1)],
+        ],
+        names=["date", "product_id"],
+    )
+
+    assert set(tables) == {"products", "customers", "traffic", "marketing", "orders"}
+    for table_name in ("traffic", "marketing"):
+        facts = tables[table_name]
+        assert len(facts) == config.days * config.product_count
+        assert not facts.duplicated(["date", "product_id"]).any()
+        assert pd.MultiIndex.from_frame(facts[["date", "product_id"]]).equals(
+            expected_grid
+        )
+
+
+def test_fact_generation_is_deterministic_with_unique_order_ids() -> None:
+    config = load_data_config(CONFIG)
+    first = generate_dataset(config)
+    second = generate_dataset(config)
+
+    for table_name in first:
+        assert_frame_equal(first[table_name], second[table_name])
+    assert first["orders"]["order_id"].is_unique
+    assert first["orders"]["order_id"].tolist() == [
+        f"O{number:06d}" for number in range(1, len(first["orders"]) + 1)
+    ]
+
+
+def test_fact_rows_reuse_declared_schemas() -> None:
+    tables = generate_dataset(load_data_config(CONFIG))
+
+    schema_by_table = {
+        "traffic": TrafficRow,
+        "marketing": MarketingRow,
+        "orders": OrderRow,
+    }
+    for table_name, schema in schema_by_table.items():
+        for row in tables[table_name].to_dict(orient="records"):
+            schema.model_validate(row)
+
+
+def test_fact_randomness_uses_named_substreams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_data_config(CONFIG)
+    stream_names: list[str] = []
+    original_rng = generator._rng
+
+    def recording_rng(current_config, stream_name):
+        stream_names.append(stream_name)
+        return original_rng(current_config, stream_name)
+
+    monkeypatch.setattr(generator, "_rng", recording_rng)
+    generate_dataset(config)
+
+    assert {
+        "traffic.impressions",
+        "traffic.clicks",
+        "traffic.visits",
+        "orders.count",
+        "orders.customer",
+        "orders.quantity",
+        "orders.refund",
+    } <= set(stream_names)
+    assert all(isinstance(stream_name, str) for stream_name in stream_names)
+
+
+def test_all_seven_configured_anomaly_kinds_map_to_expected_effects() -> None:
+    config = load_data_config(CONFIG)
+    expected_effects = {
+        "sales_drop": {"conversion_multiplier": 0.55},
+        "traffic_drop": {"traffic_multiplier": 0.55},
+        "conversion_drop": {"conversion_multiplier": 0.50},
+        "high_refund": {"refund_multiplier": 4.00},
+        "missing_traffic": {"missing_traffic": True},
+        "extreme_traffic_spike": {"traffic_multiplier": 4.00},
+        "multi_factor_drop": {
+            "traffic_multiplier": 0.70,
+            "conversion_multiplier": 0.70,
+        },
+    }
+
+    assert {anomaly.kind for anomaly in config.anomalies} == set(expected_effects)
+    for anomaly in config.anomalies:
+        effects = _anomaly_effects(config, anomaly.product_id, anomaly.start_day)
+        for effect, expected in expected_effects[anomaly.kind].items():
+            assert effects[effect] == expected
+
+
+def test_configured_anomalies_are_observable_in_generated_facts() -> None:
+    config = load_data_config(CONFIG)
+    tables = generate_dataset(config)
+    traffic = tables["traffic"]
+    orders = tables["orders"]
+
+    missing = traffic[(traffic["product_id"] == "P005") & traffic["is_missing"]]
+    assert len(missing) == 6
+    assert missing[["impressions", "clicks", "visits"]].isna().all().all()
+
+    max_date = traffic["date"].max()
+    current_start = max_date - timedelta(days=29)
+    previous_start = max_date - timedelta(days=59)
+    previous_end = max_date - timedelta(days=30)
+    current_traffic = traffic[traffic["date"].between(current_start, max_date)]
+    previous_traffic = traffic[traffic["date"].between(previous_start, previous_end)]
+    current_orders = orders[orders["order_date"].between(current_start, max_date)]
+    previous_orders = orders[orders["order_date"].between(previous_start, previous_end)]
+
+    def visits(frame, product_id):
+        return frame.loc[frame["product_id"] == product_id, "visits"].sum()
+
+    def order_count(frame, product_id):
+        return frame.loc[frame["product_id"] == product_id, "order_id"].nunique()
+
+    def conversion(frame_orders, frame_traffic, product_id):
+        return order_count(frame_orders, product_id) / visits(frame_traffic, product_id)
+
+    assert order_count(current_orders, "P001") < order_count(previous_orders, "P001")
+    assert visits(current_traffic, "P002") < visits(previous_traffic, "P002")
+    assert conversion(current_orders, current_traffic, "P003") < conversion(
+        previous_orders, previous_traffic, "P003"
+    )
+    assert (
+        current_orders.loc[current_orders["product_id"] == "P004", "is_refund"].mean()
+        > previous_orders.loc[
+            previous_orders["product_id"] == "P004", "is_refund"
+        ].mean()
+    )
+
+    spike_date = config.start_date + timedelta(days=112)
+    spike_impressions = traffic.loc[
+        (traffic["product_id"] == "P006") & (traffic["date"] == spike_date),
+        "impressions",
+    ].item()
+    normal_impressions = traffic.loc[
+        (traffic["product_id"] == "P006")
+        & traffic["date"].between(
+            spike_date - timedelta(days=7), spike_date - timedelta(days=1)
+        ),
+        "impressions",
+    ].median()
+    assert spike_impressions > normal_impressions * 2
+
+    assert visits(current_traffic, "P007") < visits(previous_traffic, "P007")
+    assert order_count(current_orders, "P007") < order_count(previous_orders, "P007")
