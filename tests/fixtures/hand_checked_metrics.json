@@ -1,0 +1,31 @@
+{
+  "orders": [
+    {
+      "order_id": "O20260101-P001-000001",
+      "revenue": 100.0,
+      "is_refund": false,
+      "status": "paid"
+    },
+    {
+      "order_id": "O20260101-P002-000001",
+      "revenue": 200.0,
+      "is_refund": true,
+      "status": "refunded"
+    }
+  ],
+  "traffic": {
+    "impressions": 1000,
+    "clicks": 100,
+    "visits": 50
+  },
+  "marketing_spend": 75.0,
+  "expected": {
+    "gmv": 300.0,
+    "orders": 2,
+    "aov": 150.0,
+    "ctr": 0.1,
+    "cvr": 0.04,
+    "refund_rate": 0.5,
+    "roas": 4.0
+  }
+}
