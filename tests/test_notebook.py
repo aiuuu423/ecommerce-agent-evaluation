@@ -2,6 +2,8 @@ import re
 from pathlib import Path
 
 import nbformat
+import pytest
+from nbclient import NotebookClient
 
 ROOT = Path(__file__).parents[1]
 NOTEBOOK_PATH = ROOT / "notebooks" / "01_data_exploration.ipynb"
@@ -49,7 +51,7 @@ def test_notebook_is_read_only_and_contains_no_execution_state() -> None:
         assert write_operation not in code
 
 
-def test_notebook_uses_both_snapshots_with_robust_project_discovery() -> None:
+def test_notebook_uses_verified_catalog_without_holdout_leakage() -> None:
     notebook = load_notebook()
     code = "\n".join(cell.source for cell in notebook.cells if cell.cell_type == "code")
     content = "\n".join(cell.source for cell in notebook.cells)
@@ -58,7 +60,25 @@ def test_notebook_uses_both_snapshots_with_robust_project_discovery() -> None:
     assert "pyproject.toml" in code
     assert "data/synthetic/v1" in code
     assert "data/synthetic/holdout-v1" in code
+    assert "open_dataset" in code
+    assert ".fetch_df()" in code
+    assert ".verified_summary" in code
+    assert ".manifest" not in code
     assert "make phase1-data" in content
+    assert "pd.read_parquet" not in code
+    assert "read_text(" not in code
+    assert 'catalogs["Holdout"].execute' not in code
+
+    lowered = content.lower()
+    for forbidden in (
+        ".yaml",
+        "seed",
+        "multiplier",
+        "config_sha256",
+        "generator_source_sha256",
+        "product_id",
+    ):
+        assert forbidden not in lowered
 
 
 def test_notebook_covers_business_metrics_without_agent_effect_numbers() -> None:
@@ -75,3 +95,69 @@ def test_notebook_covers_business_metrics_without_agent_effect_numbers() -> None
         content,
         flags=re.IGNORECASE,
     )
+
+
+@pytest.mark.parametrize("execution_cwd", [ROOT, ROOT / "notebooks"])
+def test_notebook_executes_from_supported_working_directories(
+    execution_cwd: Path,
+) -> None:
+    notebook = load_notebook()
+    notebook.cells.append(
+        nbformat.v4.new_code_cell(
+            """
+expected_summary_columns = {
+    "dataset",
+    "source_label",
+    "dataset_version",
+    "dataset_id",
+    "start_date",
+    "end_date",
+    "rows_products",
+    "rows_customers",
+    "rows_traffic",
+    "rows_marketing",
+    "rows_orders",
+    "quality_status",
+}
+assert set(dataset_summary.columns) == expected_summary_columns
+assert set(dataset_summary["dataset"]) == {"Development", "Holdout"}
+assert dataset_summary["quality_status"].eq("pass (verified)").all()
+
+expected_metric_columns = {
+    "date",
+    "observed_rows",
+    "total_rows",
+    "coverage",
+    "GMV",
+    "Orders",
+    "AOV",
+    "CTR",
+    "CVR",
+    "Refund Rate",
+    "ROAS",
+}
+assert set(daily_metrics.columns) == expected_metric_columns
+assert daily_metrics["coverage"].between(0, 1).all()
+missing_days = daily_metrics.loc[daily_metrics["coverage"].lt(1)]
+complete_days = daily_metrics.loc[daily_metrics["coverage"].eq(1)]
+assert not missing_days.empty
+assert missing_days[["CTR", "CVR"]].isna().all().all()
+assert complete_days[["CTR", "CVR"]].notna().all().all()
+assert coverage_gaps[["CTR", "CVR"]].isna().all().all()
+"""
+        )
+    )
+
+    executed = NotebookClient(
+        notebook,
+        timeout=120,
+        kernel_name="python3",
+    ).execute(cwd=execution_cwd)
+
+    assert all(
+        output.get("output_type") != "error"
+        for cell in executed.cells
+        for output in cell.get("outputs", [])
+    )
+    assert all(cell.get("execution_count") is None for cell in load_notebook().cells)
+    assert all(not cell.get("outputs", []) for cell in load_notebook().cells)

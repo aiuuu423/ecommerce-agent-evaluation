@@ -196,6 +196,21 @@ def test_catalog_exposes_read_only_description_for_gold_style_query(
             relation.execute("delete from orders")
 
 
+def test_catalog_fetch_df_returns_detached_query_result(dataset_dir: Path) -> None:
+    with open_dataset(dataset_dir) as catalog:
+        result = catalog.execute(
+            "select product_id, product_name from products order by product_id"
+        ).fetch_df()
+        result.loc[0, "product_name"] = "mutated result"
+        original_name = catalog.execute(
+            "select product_name from products where product_id = 'P001'"
+        ).fetchone()
+
+    assert list(result.columns) == ["product_id", "product_name"]
+    assert original_name is not None
+    assert original_name[0] != "mutated result"
+
+
 def test_catalog_exposes_verified_manifest_as_read_only_metadata(
     dataset_dir: Path,
 ) -> None:
@@ -209,12 +224,36 @@ def test_catalog_exposes_verified_manifest_as_read_only_metadata(
             catalog.manifest["tables"]["products"]["rows"] = 0
 
 
+def test_catalog_exposes_non_sensitive_verified_summary(dataset_dir: Path) -> None:
+    expected = _manifest(dataset_dir)
+
+    with open_dataset(dataset_dir) as catalog:
+        summary = catalog.verified_summary
+
+    assert set(summary) == {
+        "dataset_id",
+        "dataset_version",
+        "source_label",
+        "row_counts",
+        "quality_status",
+    }
+    assert summary["dataset_id"] == expected["dataset_id"]
+    assert summary["row_counts"] == {
+        name: expected["tables"][name]["rows"] for name in TABLES
+    }
+    assert summary["quality_status"] == "pass"
+    with pytest.raises(TypeError):
+        summary["row_counts"]["products"] = 0
+
+
 def test_catalog_context_manager_closes_connection(dataset_dir: Path) -> None:
     with open_dataset(dataset_dir) as catalog:
         assert catalog.execute("select 1").fetchone() == (1,)
 
     with pytest.raises(ValueError, match="closed"):
         catalog.execute("select 1")
+    with pytest.raises(ValueError, match="closed"):
+        catalog.fetch_df()
 
 
 @pytest.mark.parametrize(

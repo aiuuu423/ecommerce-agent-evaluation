@@ -19,6 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "ipykernel>=6.29,<7",
+  "nbclient>=0.10,<1",
   "nbformat>=5.10,<6",
   "packaging>=24,<26",
   "pip-tools>=7.4,<8",

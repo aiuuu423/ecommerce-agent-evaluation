@@ -157,6 +157,17 @@ class Catalog:
         self.__connection = connection
         self.__tables = tables
         self.__manifest = _freeze(manifest)
+        self.__summary = _freeze(
+            {
+                "dataset_id": manifest["dataset_id"],
+                "dataset_version": manifest["dataset_version"],
+                "source_label": manifest["source_label"],
+                "row_counts": {
+                    name: manifest["tables"][name]["rows"] for name in TABLE_NAMES
+                },
+                "quality_status": "pass",
+            }
+        )
         self.__closed = False
 
     def execute(
@@ -180,6 +191,10 @@ class Catalog:
         return self.__manifest
 
     @property
+    def verified_summary(self) -> Mapping[str, Any]:
+        return self.__summary
+
+    @property
     def description(self) -> tuple[tuple[Any, ...], ...] | None:
         if self.__closed:
             raise ValueError("catalog is closed")
@@ -197,6 +212,11 @@ class Catalog:
         if self.__closed:
             raise ValueError("catalog is closed")
         return self.__connection.fetchall()
+
+    def fetch_df(self) -> pd.DataFrame:
+        if self.__closed:
+            raise ValueError("catalog is closed")
+        return self.__connection.fetchdf().copy(deep=True)
 
     def close(self) -> None:
         if not self.__closed:
