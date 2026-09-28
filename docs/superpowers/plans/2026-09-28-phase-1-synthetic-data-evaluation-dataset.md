@@ -1582,6 +1582,7 @@ def valid_case() -> dict:
         "case_version": "1.0",
         "dataset_version": "v1",
         "dataset_id": "0123456789abcdef",
+        "generator_config_hash": "a" * 64,
         "business_task": "gmv_diagnosis",
         "primary_capability": "metric_calculation",
         "capability_tags": ["metric_calculation"],
@@ -1593,9 +1594,12 @@ def valid_case() -> dict:
         ],
         "allowed_alternatives": [],
         "gold_metrics": {"gmv_change_rate": -0.12},
+        "gold_metric_evidence": {
+            "gmv_change_rate": "EV_GMV_DIAGNOSIS_001"
+        },
         "gold_evidence": [
             {
-                "evidence_id": "EV_CASE_001_01",
+                "evidence_id": "EV_GMV_DIAGNOSIS_001",
                 "source": "gmv_change.sql",
                 "dimensions": {},
                 "metrics": {"gmv_change_rate": -0.12}
@@ -1617,12 +1621,23 @@ def valid_case() -> dict:
 
 def test_case_schema_accepts_traceable_case() -> None:
     case = EvaluationCase.model_validate(valid_case())
-    assert case.gold_evidence[0].evidence_id == "EV_CASE_001_01"
+    assert case.generator_config_hash == "a" * 64
+    assert case.gold_evidence[0].evidence_id == "EV_GMV_DIAGNOSIS_001"
+    assert case.gold_metric_evidence == {
+        "gmv_change_rate": "EV_GMV_DIAGNOSIS_001"
+    }
 
 
 def test_case_schema_rejects_missing_success_criteria() -> None:
     payload = valid_case()
     payload["success_criteria"] = []
+    with pytest.raises(ValidationError):
+        EvaluationCase.model_validate(payload)
+
+
+def test_case_schema_rejects_unmapped_gold_metric() -> None:
+    payload = valid_case()
+    payload["gold_metric_evidence"] = {}
     with pytest.raises(ValidationError):
         EvaluationCase.model_validate(payload)
 ```
@@ -1672,7 +1687,12 @@ class ExpectedToolCall(StrictModel):
 
 
 class GoldEvidence(StrictModel):
-    evidence_id: str
+    evidence_id: str = Field(
+        pattern=(
+            r"^EV_(GMV_DIAGNOSIS|PRODUCT_ANOMALY|CONVERSION_DECLINE|"
+            r"PRODUCTS_TO_WATCH|NEXT_WEEK_PRIORITY)_\d{3}$"
+        )
+    )
     source: str
     dimensions: dict[str, float | int | str | None]
     metrics: dict[str, float | int | str | None] = Field(min_length=1)
@@ -1683,6 +1703,7 @@ class EvaluationCase(StrictModel):
     case_version: str
     dataset_version: str
     dataset_id: str = Field(min_length=16, max_length=16)
+    generator_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     business_task: BusinessTask
     primary_capability: Capability
     capability_tags: list[Capability] = Field(min_length=1)
@@ -1692,13 +1713,38 @@ class EvaluationCase(StrictModel):
     expected_tool_calls: list[ExpectedToolCall] = Field(min_length=1)
     allowed_alternatives: list[list[ExpectedToolCall]]
     gold_metrics: dict[str, float | int | str | None]
+    gold_metric_evidence: dict[str, str]
     gold_evidence: list[GoldEvidence] = Field(min_length=1)
     reference_answer: str = Field(min_length=5)
     expected_behavior: list[str] = Field(min_length=1)
     success_criteria: list[str] = Field(min_length=1)
     numeric_tolerances: dict[str, float]
     metadata: dict[str, Any]
+
+    @model_validator(mode="after")
+    def validate_gold_metric_evidence(self) -> "EvaluationCase":
+        if set(self.gold_metric_evidence) != set(self.gold_metrics):
+            raise ValueError("every gold metric must have exactly one evidence mapping")
+        evidence_by_id = {
+            evidence.evidence_id: evidence for evidence in self.gold_evidence
+        }
+        for metric_name, evidence_id in self.gold_metric_evidence.items():
+            evidence = evidence_by_id.get(evidence_id)
+            if evidence is None or metric_name not in evidence.metrics:
+                raise ValueError(
+                    f"{metric_name}: mapped evidence must exist and contain the metric"
+                )
+            if evidence.metrics[metric_name] != self.gold_metrics[metric_name]:
+                raise ValueError(
+                    f"{metric_name}: mapped evidence value must match gold_metrics"
+                )
+        return self
 ```
+
+`generator_config_hash` 使用 Dataset Manifest 的 `config_sha256`，不得由 Case
+生成器重新计算或接受调用方覆盖。Evidence ID 统一使用稳定的任务级格式
+`EV_<BUSINESS_TASK>_<ROW_NUMBER>`；编号来自对应 Gold SQL 的确定性排序，与
+`case_id`、Case Split 和 Case 生成顺序无关。
 
 - [ ] **Step 4: 运行测试并提交**
 
@@ -1746,6 +1792,7 @@ def test_gold_bundle_covers_five_business_tasks(tmp_path) -> None:
     gold = build_gold_bundle(dataset_dir)
 
     assert gold["dataset_id"] == manifest["dataset_id"]
+    assert gold["config_sha256"] == manifest["config_sha256"]
     assert set(gold["tasks"]) == {
         "gmv_diagnosis",
         "product_anomaly",
@@ -1754,6 +1801,9 @@ def test_gold_bundle_covers_five_business_tasks(tmp_path) -> None:
         "next_week_priority",
     }
     assert all(task["evidence"] for task in gold["tasks"].values())
+    assert gold["tasks"]["gmv_diagnosis"]["evidence"][0]["evidence_id"] == (
+        "EV_GMV_DIAGNOSIS_001"
+    )
 
 
 def test_gold_detects_configured_conversion_drop(tmp_path) -> None:
@@ -2148,9 +2198,14 @@ def build_gold_bundle(dataset_dir: Path) -> dict:
     return {
         "dataset_id": manifest["dataset_id"],
         "dataset_version": manifest["dataset_version"],
+        "config_sha256": manifest["config_sha256"],
         "tasks": tasks,
     }
 ```
+
+Evidence ID 必须固定为 `EV_<BUSINESS_TASK>_<ROW_NUMBER>`。每份 Gold SQL
+必须以稳定键显式排序后再编号；同一 Dataset Manifest 重复构建 Gold Bundle
+时，Evidence ID 不得随 Case 数量、Split 或遍历顺序变化。
 
 - [ ] **Step 5: 完成三份规则 SQL 与测试**
 
@@ -2197,6 +2252,7 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 追加到 `tests/test_case_generator.py`：
 
 ```python
+import json
 from collections import Counter
 
 from app.data.case_generator import build_cases
@@ -2235,12 +2291,33 @@ def test_every_case_binds_dataset_and_gold_evidence(tmp_path) -> None:
     cases = build_cases(dataset_dir)
 
     assert all(case.dataset_id == manifest["dataset_id"] for case in cases)
+    assert all(
+        case.dataset_version == manifest["dataset_version"] for case in cases
+    )
+    assert all(
+        case.generator_config_hash == manifest["config_sha256"] for case in cases
+    )
     assert all(case.gold_evidence for case in cases)
+    assert all(
+        set(case.gold_metric_evidence) == set(case.gold_metrics) for case in cases
+    )
     assert all(case.success_criteria for case in cases)
     assert all(
         case.metadata["source_label"] == "Synthetic E-commerce Data"
         for case in cases
     )
+
+
+def test_build_cases_rejects_invalid_dataset_manifest(tmp_path) -> None:
+    dataset_dir = tmp_path / "v1"
+    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+    manifest_path = dataset_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["config_sha256"] = "not-a-sha256"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="manifest is invalid"):
+        build_cases(dataset_dir)
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2266,7 +2343,7 @@ from pathlib import Path
 import numpy as np
 
 from app.data.gold import build_gold_bundle
-from app.data.manifest import manifest_id, write_json
+from app.data.manifest import manifest_id, validate_manifest, write_json
 from app.data.schemas import BusinessTask, Capability, EvaluationCase
 
 
@@ -2371,7 +2448,17 @@ def _question(task: BusinessTask, capability: Capability, variant: int) -> str:
 
 
 def build_cases(dataset_dir: Path) -> list[EvaluationCase]:
+    manifest = json.loads(
+        (dataset_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    validate_manifest(manifest)
     gold = build_gold_bundle(dataset_dir)
+    if (
+        gold["dataset_id"] != manifest["dataset_id"]
+        or gold["dataset_version"] != manifest["dataset_version"]
+        or gold["config_sha256"] != manifest["config_sha256"]
+    ):
+        raise ValueError("gold bundle does not match dataset manifest")
     raw = []
     case_number = 1
     for task in BUSINESS_TASKS:
@@ -2397,8 +2484,9 @@ def build_cases(dataset_dir: Path) -> list[EvaluationCase]:
                     {
                         "case_id": f"CASE_{case_number:03d}",
                         "case_version": "1.0",
-                        "dataset_version": gold["dataset_version"],
-                        "dataset_id": gold["dataset_id"],
+                        "dataset_version": manifest["dataset_version"],
+                        "dataset_id": manifest["dataset_id"],
+                        "generator_config_hash": manifest["config_sha256"],
                         "business_task": task,
                         "primary_capability": capability,
                         "capability_tags": [capability],
@@ -2417,6 +2505,10 @@ def build_cases(dataset_dir: Path) -> list[EvaluationCase]:
                         ],
                         "allowed_alternatives": [],
                         "gold_metrics": gold_metrics,
+                        "gold_metric_evidence": {
+                            key: evidence[0]["evidence_id"]
+                            for key in gold_metrics
+                        },
                         "gold_evidence": [
                             {
                                 "evidence_id": row["evidence_id"],
@@ -2487,6 +2579,7 @@ def write_cases(cases: list[EvaluationCase], output_path: Path) -> dict:
     payload = {
         "case_schema_version": "1.0",
         "dataset_id": cases[0].dataset_id,
+        "generator_config_hash": cases[0].generator_config_hash,
         "source_label": "Synthetic E-commerce Data",
         "case_count": len(cases),
         "case_set_id": manifest_id({"lines": lines}),
