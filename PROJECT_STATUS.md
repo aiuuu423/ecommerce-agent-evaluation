@@ -4,9 +4,9 @@
 
 `PHASE 0 — 项目架构与技术方案`
 
-状态：`Awaiting Review`
+状态：`Completed / Phase 1 Plan Awaiting Approval`
 
-Phase 0 设计已形成书面文档，尚未开始 Phase 1，也尚未创建业务代码。
+Phase 0 设计已经用户批准。Phase 1 原子化实施计划已形成，尚未开始 Phase 1 编码。
 
 ## Completed
 
@@ -23,12 +23,13 @@ Phase 0 设计已形成书面文档，尚未开始 Phase 1，也尚未创建业�
 - [x] 确认 Dashboard 只读取冻结实验结果。
 - [x] 创建 `PROJECT_PLAN.md`。
 - [x] 创建 Phase 0 设计文档。
+- [x] 用户批准 Phase 0 书面设计。
+- [x] 创建 Phase 1 原子化实施计划。
 
 ## Pending
 
-- [ ] 用户审阅 Phase 0 书面文档。
-- [ ] 根据审阅意见修订设计。
-- [ ] 创建 Phase 1 的原子化实施计划。
+- [ ] 用户审阅并批准 Phase 1 实施计划。
+- [ ] 选择 Subagent-Driven 或 Inline Execution。
 - [ ] 初始化项目代码结构。
 - [ ] 开始 Synthetic Data Schema 与生成器开发。
 - [ ] 建立首批 Evaluation Cases。
@@ -74,12 +75,13 @@ Phase 0 设计已形成书面文档，尚未开始 Phase 1，也尚未创建业�
 
 - 文档存在性检查：通过，三份 Phase 0 文档均存在且非空。
 - 占位符、矛盾、歧义与范围检查：通过。
+- Phase 1 计划自审：通过，共 13 个任务、70 个原子步骤；无未解决占位符。
 - Git 提交：本次 Phase 0 文档提交包含且仅包含三份设计文档；提交哈希以 Git 历史为准。
 - 代码测试：不适用，当前尚无代码。
 - 实验验证：不适用，当前尚未运行实验。
 
 ## Next Step
 
-由用户审阅 Phase 0 书面设计，并根据反馈决定是否修订。
+由用户审阅 Phase 1 原子化实施计划并选择执行方式。
 
-用户明确批准书面设计后，进入实施计划阶段；在实施计划获批前，不开始 Phase 1 编码。
+在实施计划获批前，不开始 Phase 1 编码。

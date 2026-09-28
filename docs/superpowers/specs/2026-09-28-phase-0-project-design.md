@@ -4,7 +4,7 @@
 
 - 项目：多版本 Agent 效果评测与错误归因分析
 - 日期：2026-09-28
-- 状态：Self-reviewed / Awaiting User Review
+- 状态：Approved
 - 当前阶段：PHASE 0
 - 下一阶段：PHASE 1，需在本文档获批并形成实施计划后开始
 
@@ -397,13 +397,12 @@ Portfolio 采用问题、方法、证据、错误、干预、复评和限制的�
 - [x] Dashboard 与 Portfolio 边界已定义。
 - [x] Phase 0–11 Roadmap 与阶段门禁已定义。
 - [x] 文档完成占位符、矛盾、歧义与范围自审。
-- [ ] 用户审阅书面设计。
+- [x] 用户审阅书面设计。
 - [ ] Phase 1 实施计划获批。
 
 ## 17. 下一步
 
-1. 对本文档执行占位符、矛盾、歧义和范围检查。
-2. 更新 `PROJECT_STATUS.md` 的验证状态。
-3. 将 Phase 0 文档作为独立 Git 提交。
-4. 请用户审阅书面设计。
-5. 用户批准后，编写 Phase 1 的原子化实施计划。
+1. 用户审阅 Phase 1 原子化实施计划。
+2. 用户选择 Subagent-Driven 或 Inline Execution。
+3. 计划获批后更新本页验收状态。
+4. 按计划从 Phase 1 Task 1 开始执行，不提前实现后续 Phase。
