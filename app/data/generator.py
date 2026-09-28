@@ -28,6 +28,7 @@ NEW_CUSTOMER_PROBABILITY = 0.28
 MAX_CLICK_THROUGH_RATE = 0.22
 MAX_CONVERSION_RATE = 0.25
 MAX_REFUND_PROBABILITY = 0.65
+MAX_ORDER_SEQUENCE = 999_999
 DimensionValue = TypeVar("DimensionValue")
 
 
@@ -162,109 +163,224 @@ def _anomaly_effects(
     return effects
 
 
+def _fact_rng(
+    config: SyntheticDataConfig,
+    field_name: str,
+    current_date: date,
+    product_id: str,
+    order_sequence: int | None = None,
+) -> np.random.Generator:
+    coordinates = f"{field_name}|{current_date.isoformat()}|{product_id}"
+    if order_sequence is not None:
+        coordinates = f"{coordinates}|{order_sequence}"
+    return _rng(config, coordinates)
+
+
+def _order_id(current_date: date, product_id: str, order_sequence: int) -> str:
+    if not 1 <= order_sequence <= MAX_ORDER_SEQUENCE:
+        raise ValueError(
+            f"order sequence must be between 1 and {MAX_ORDER_SEQUENCE}"
+        )
+    return f"O{current_date:%Y%m%d}-{product_id}-{order_sequence:06d}"
+
+
+def _generate_traffic_values(
+    config: SyntheticDataConfig,
+    current_date: date,
+    product_id: str,
+    day_index: int,
+    effects: Mapping[str, float | bool],
+) -> tuple[int, int, int]:
+    product_number = int(product_id[1:])
+    weekly_factor = 1.12 if current_date.weekday() >= 5 else 1.0
+    trend_factor = 1.0 + day_index * 0.0008
+    base_impressions = 850 + product_number * 12
+    impressions = int(
+        _fact_rng(config, "traffic.impressions", current_date, product_id).poisson(
+            base_impressions
+            * weekly_factor
+            * trend_factor
+            * float(effects["traffic_multiplier"])
+        )
+    )
+    click_through_rate = min(
+        MAX_CLICK_THROUGH_RATE,
+        0.07 + (product_number % 5) * 0.01,
+    )
+    clicks = int(
+        _fact_rng(config, "traffic.clicks", current_date, product_id).binomial(
+            impressions, click_through_rate
+        )
+    )
+    visits = clicks + int(
+        _fact_rng(config, "traffic.visits", current_date, product_id).poisson(
+            max(4, clicks * 0.12)
+        )
+    )
+    return impressions, clicks, visits
+
+
+def _generate_traffic_row(
+    current_date: date,
+    product_id: str,
+    values: tuple[int, int, int],
+    *,
+    is_missing: bool,
+) -> dict[str, object]:
+    impressions, clicks, visits = values
+    row = TrafficRow(
+        date=current_date,
+        product_id=product_id,
+        impressions=None if is_missing else impressions,
+        clicks=None if is_missing else clicks,
+        visits=None if is_missing else visits,
+        is_missing=is_missing,
+    )
+    return row.model_dump()
+
+
+def _generate_marketing_row(
+    current_date: date,
+    product_id: str,
+    day_index: int,
+    impressions: int,
+) -> dict[str, object]:
+    product_number = int(product_id[1:])
+    spend_rate = Decimal("0.012") + Decimal(day_index % 7) * Decimal("0.0005")
+    row = MarketingRow(
+        date=current_date,
+        product_id=product_id,
+        campaign_id=f"M{product_number:03d}",
+        spend=(Decimal(impressions) * spend_rate).quantize(
+            CENT, rounding=ROUND_HALF_UP
+        ),
+    )
+    return row.model_dump()
+
+
+def _generate_order_rows(
+    config: SyntheticDataConfig,
+    current_date: date,
+    product_id: str,
+    unit_price: Decimal,
+    visits: int,
+    effects: Mapping[str, float | bool],
+) -> list[dict[str, object]]:
+    product_number = int(product_id[1:])
+    conversion_rate = min(
+        MAX_CONVERSION_RATE,
+        (0.035 + (product_number % 4) * 0.008)
+        * float(effects["conversion_multiplier"]),
+    )
+    order_count = int(
+        _fact_rng(config, "orders.count", current_date, product_id).binomial(
+            visits, conversion_rate
+        )
+    )
+    if order_count > MAX_ORDER_SEQUENCE:
+        raise ValueError("generated order count exceeds order ID capacity")
+
+    refund_probability = min(
+        MAX_REFUND_PROBABILITY,
+        (0.035 + (product_number % 3) * 0.01)
+        * float(effects["refund_multiplier"]),
+    )
+    rows: list[dict[str, object]] = []
+    for order_sequence in range(1, order_count + 1):
+        customer_number = int(
+            _fact_rng(
+                config,
+                "orders.customer",
+                current_date,
+                product_id,
+                order_sequence,
+            ).integers(1, config.customer_count + 1)
+        )
+        quantity = int(
+            _fact_rng(
+                config,
+                "orders.quantity",
+                current_date,
+                product_id,
+                order_sequence,
+            ).choice([1, 1, 1, 2, 2, 3])
+        )
+        is_refund = bool(
+            _fact_rng(
+                config,
+                "orders.refund",
+                current_date,
+                product_id,
+                order_sequence,
+            ).random()
+            < refund_probability
+        )
+        row = OrderRow(
+            order_id=_order_id(current_date, product_id, order_sequence),
+            product_id=product_id,
+            customer_id=f"C{customer_number:04d}",
+            order_date=current_date,
+            quantity=quantity,
+            unit_price=unit_price,
+            revenue=(unit_price * quantity).quantize(CENT, rounding=ROUND_HALF_UP),
+            is_refund=is_refund,
+            status="refunded" if is_refund else "paid",
+        )
+        rows.append(row.model_dump())
+    return rows
+
+
+def _generate_product_day(
+    config: SyntheticDataConfig,
+    current_date: date,
+    day_index: int,
+    product_id: str,
+    unit_price: Decimal,
+) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
+    effects = _anomaly_effects(config, product_id, day_index)
+    traffic_values = _generate_traffic_values(
+        config, current_date, product_id, day_index, effects
+    )
+    traffic_row = _generate_traffic_row(
+        current_date,
+        product_id,
+        traffic_values,
+        is_missing=bool(effects["missing_traffic"]),
+    )
+    marketing_row = _generate_marketing_row(
+        current_date, product_id, day_index, traffic_values[0]
+    )
+    order_rows = _generate_order_rows(
+        config,
+        current_date,
+        product_id,
+        unit_price,
+        traffic_values[2],
+        effects,
+    )
+    return traffic_row, marketing_row, order_rows
+
+
 def generate_dataset(config: SyntheticDataConfig) -> dict[str, pd.DataFrame]:
     products = generate_products(config)
     customers = generate_customers(config)
-    impressions_rng = _rng(config, "traffic.impressions")
-    clicks_rng = _rng(config, "traffic.clicks")
-    visits_rng = _rng(config, "traffic.visits")
-    order_count_rng = _rng(config, "orders.count")
-    customer_rng = _rng(config, "orders.customer")
-    quantity_rng = _rng(config, "orders.quantity")
-    refund_rng = _rng(config, "orders.refund")
     traffic_rows: list[dict[str, object]] = []
     marketing_rows: list[dict[str, object]] = []
     order_rows: list[dict[str, object]] = []
-    order_number = 1
 
     for day_index in range(config.days):
         current_date = config.start_date + timedelta(days=day_index)
-        weekly_factor = 1.12 if current_date.weekday() >= 5 else 1.0
-        trend_factor = 1.0 + day_index * 0.0008
-
         for product in products.itertuples(index=False):
-            product_number = int(product.product_id[1:])
-            effects = _anomaly_effects(config, product.product_id, day_index)
-            base_impressions = 850 + product_number * 12
-            impressions = int(
-                impressions_rng.poisson(
-                    base_impressions
-                    * weekly_factor
-                    * trend_factor
-                    * float(effects["traffic_multiplier"])
-                )
+            traffic_row, marketing_row, daily_orders = _generate_product_day(
+                config,
+                current_date,
+                day_index,
+                product.product_id,
+                product.price,
             )
-            click_through_rate = min(
-                MAX_CLICK_THROUGH_RATE,
-                0.07 + (product_number % 5) * 0.01,
-            )
-            clicks = int(clicks_rng.binomial(impressions, click_through_rate))
-            visits = clicks + int(visits_rng.poisson(max(4, clicks * 0.12)))
-            conversion_rate = min(
-                MAX_CONVERSION_RATE,
-                (0.035 + (product_number % 4) * 0.008)
-                * float(effects["conversion_multiplier"]),
-            )
-
-            if effects["missing_traffic"]:
-                traffic_row = TrafficRow(
-                    date=current_date,
-                    product_id=product.product_id,
-                    impressions=None,
-                    clicks=None,
-                    visits=None,
-                    is_missing=True,
-                )
-            else:
-                traffic_row = TrafficRow(
-                    date=current_date,
-                    product_id=product.product_id,
-                    impressions=impressions,
-                    clicks=clicks,
-                    visits=visits,
-                    is_missing=False,
-                )
-            traffic_rows.append(traffic_row.model_dump())
-
-            spend_rate = Decimal("0.012") + Decimal(day_index % 7) * Decimal(
-                "0.0005"
-            )
-            marketing_row = MarketingRow(
-                date=current_date,
-                product_id=product.product_id,
-                campaign_id=f"M{product_number:03d}",
-                spend=(Decimal(impressions) * spend_rate).quantize(
-                    CENT, rounding=ROUND_HALF_UP
-                ),
-            )
-            marketing_rows.append(marketing_row.model_dump())
-
-            order_count = int(order_count_rng.binomial(visits, conversion_rate))
-            refund_probability = min(
-                MAX_REFUND_PROBABILITY,
-                (0.035 + (product_number % 3) * 0.01)
-                * float(effects["refund_multiplier"]),
-            )
-            for _ in range(order_count):
-                quantity = int(quantity_rng.choice([1, 1, 1, 2, 2, 3]))
-                is_refund = bool(refund_rng.random() < refund_probability)
-                order_row = OrderRow(
-                    order_id=f"O{order_number:06d}",
-                    product_id=product.product_id,
-                    customer_id=(
-                        f"C{int(customer_rng.integers(1, config.customer_count + 1)):04d}"
-                    ),
-                    order_date=current_date,
-                    quantity=quantity,
-                    unit_price=product.price,
-                    revenue=(product.price * quantity).quantize(
-                        CENT, rounding=ROUND_HALF_UP
-                    ),
-                    is_refund=is_refund,
-                    status="refunded" if is_refund else "paid",
-                )
-                order_rows.append(order_row.model_dump())
-                order_number += 1
+            traffic_rows.append(traffic_row)
+            marketing_rows.append(marketing_row)
+            order_rows.extend(daily_orders)
 
     traffic = pd.DataFrame(traffic_rows)
     nullable_metrics = ["impressions", "clicks", "visits"]

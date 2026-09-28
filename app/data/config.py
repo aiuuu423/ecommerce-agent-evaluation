@@ -43,7 +43,7 @@ class AnomalyConfig(BaseModel):
     product_id: ProductId
     start_day: int = Field(ge=0)
     end_day: int = Field(ge=0)
-    multiplier: float = Field(gt=0, allow_inf_nan=False)
+    multiplier: float = Field(gt=0, le=10, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_multiplier_for_kind(self) -> "AnomalyConfig":

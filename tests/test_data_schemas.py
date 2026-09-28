@@ -58,7 +58,7 @@ def marketing_data(**overrides: object) -> dict[str, object]:
 
 def order_data(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
-        "order_id": "O000001",
+        "order_id": "O20260101-P001-000001",
         "product_id": "P001",
         "customer_id": "C0001",
         "order_date": date(2026, 1, 1),
@@ -127,7 +127,12 @@ def test_product_rejects_cost_equal_to_or_above_price(cost: str) -> None:
         (TrafficRow, traffic_data(product_id="invalid"), ("product_id",), r"^P[0-9]{3}$"),
         (MarketingRow, marketing_data(product_id="invalid"), ("product_id",), r"^P[0-9]{3}$"),
         (MarketingRow, marketing_data(campaign_id="M１２３"), ("campaign_id",), r"^M[0-9]{3}$"),
-        (OrderRow, order_data(order_id="O１２３４５６"), ("order_id",), r"^O[0-9]{6}$"),
+        (
+            OrderRow,
+            order_data(order_id="O２０２６０１０１-P001-000001"),
+            ("order_id",),
+            r"^O[0-9]{8}-P[0-9]{3}-[0-9]{6}$",
+        ),
         (OrderRow, order_data(product_id="invalid"), ("product_id",), r"^P[0-9]{3}$"),
         (OrderRow, order_data(customer_id="invalid"), ("customer_id",), r"^C[0-9]{4}$"),
     ],

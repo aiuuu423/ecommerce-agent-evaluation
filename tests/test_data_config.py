@@ -248,6 +248,21 @@ def test_anomaly_multiplier_must_be_finite(multiplier: float) -> None:
     assert error["type"] == "finite_number"
 
 
+def test_anomaly_multiplier_rejects_unsupported_scale() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        SyntheticDataConfig.model_validate(
+            minimal_config(
+                anomalies=[
+                    anomaly_data(kind="extreme_traffic_spike", multiplier=10.01)
+                ]
+            )
+        )
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ("anomalies", 0, "multiplier")
+    assert error["type"] == "less_than_equal"
+
+
 @pytest.mark.parametrize(
     ("kind", "multiplier"),
     [

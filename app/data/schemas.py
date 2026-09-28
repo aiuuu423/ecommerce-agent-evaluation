@@ -7,7 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 Money = Annotated[Decimal, Field(decimal_places=2)]
 ProductId = Annotated[str, Field(pattern=r"^P[0-9]{3}$")]
 CustomerId = Annotated[str, Field(pattern=r"^C[0-9]{4}$")]
-OrderId = Annotated[str, Field(pattern=r"^O[0-9]{6}$")]
+OrderId = Annotated[
+    str,
+    Field(pattern=r"^O[0-9]{8}-P[0-9]{3}-[0-9]{6}$"),
+]
 CampaignId = Annotated[str, Field(pattern=r"^M[0-9]{3}$")]
 
 

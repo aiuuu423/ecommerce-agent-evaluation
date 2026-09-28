@@ -11,6 +11,7 @@ from app.data.config import load_data_config
 from app.data.generator import (
     _anomaly_effects,
     _launch_date,
+    _order_id,
     generate_customers,
     generate_dataset,
     generate_products,
@@ -241,9 +242,22 @@ def test_fact_generation_is_deterministic_with_unique_order_ids() -> None:
     for table_name in first:
         assert_frame_equal(first[table_name], second[table_name])
     assert first["orders"]["order_id"].is_unique
-    assert first["orders"]["order_id"].tolist() == [
-        f"O{number:06d}" for number in range(1, len(first["orders"]) + 1)
-    ]
+    assert first["orders"]["order_id"].str.fullmatch(
+        r"O[0-9]{8}-P[0-9]{3}-[0-9]{6}"
+    ).all()
+
+
+def test_order_id_is_stable_and_supports_maximum_daily_sequence() -> None:
+    assert _order_id(date(2026, 12, 31), "P999", 1) == "O20261231-P999-000001"
+    assert _order_id(date(2026, 12, 31), "P999", 999_999) == (
+        "O20261231-P999-999999"
+    )
+
+
+@pytest.mark.parametrize("sequence", [0, 1_000_000])
+def test_order_id_rejects_sequence_outside_capacity(sequence: int) -> None:
+    with pytest.raises(ValueError, match="order sequence"):
+        _order_id(date(2026, 1, 1), "P001", sequence)
 
 
 def test_fact_rows_reuse_declared_schemas() -> None:
@@ -259,7 +273,7 @@ def test_fact_rows_reuse_declared_schemas() -> None:
             schema.model_validate(row)
 
 
-def test_fact_randomness_uses_named_substreams(
+def test_fact_randomness_is_derived_from_field_date_product_and_order_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = load_data_config(CONFIG)
@@ -273,16 +287,105 @@ def test_fact_randomness_uses_named_substreams(
     monkeypatch.setattr(generator, "_rng", recording_rng)
     generate_dataset(config)
 
-    assert {
-        "traffic.impressions",
-        "traffic.clicks",
-        "traffic.visits",
-        "orders.count",
-        "orders.customer",
-        "orders.quantity",
-        "orders.refund",
-    } <= set(stream_names)
-    assert all(isinstance(stream_name, str) for stream_name in stream_names)
+    fact_streams = [
+        stream_name
+        for stream_name in stream_names
+        if stream_name.startswith(("traffic.", "orders."))
+    ]
+    assert any(
+        stream_name.startswith("traffic.impressions|2026-01-01|P001")
+        for stream_name in fact_streams
+    )
+    assert any(
+        stream_name.startswith("orders.count|2026-01-01|P001")
+        for stream_name in fact_streams
+    )
+    assert any(
+        stream_name.startswith("orders.customer|2026-01-01|P001|")
+        for stream_name in fact_streams
+    )
+    assert all(stream_name.count("|") >= 2 for stream_name in fact_streams)
+
+
+def test_single_anomaly_counterfactual_is_isolated_with_the_same_seed() -> None:
+    config = load_data_config(CONFIG)
+    anomaly = next(item for item in config.anomalies if item.kind == "traffic_drop")
+    isolated = config.model_copy(update={"anomalies": [anomaly]})
+    counterfactual = config.model_copy(update={"anomalies": []})
+
+    actual = generate_dataset(isolated)
+    expected = generate_dataset(counterfactual)
+    for table_name in ("products", "customers"):
+        assert_frame_equal(actual[table_name], expected[table_name])
+
+    start = config.start_date + timedelta(days=anomaly.start_day)
+    end = config.start_date + timedelta(days=anomaly.end_day)
+    for table_name, date_column in (
+        ("traffic", "date"),
+        ("marketing", "date"),
+        ("orders", "order_date"),
+    ):
+        actual_rows = actual[table_name]
+        expected_rows = expected[table_name]
+        actual_unaffected = actual_rows[
+            (actual_rows["product_id"] != anomaly.product_id)
+            | ~actual_rows[date_column].between(start, end)
+        ].reset_index(drop=True)
+        expected_unaffected = expected_rows[
+            (expected_rows["product_id"] != anomaly.product_id)
+            | ~expected_rows[date_column].between(start, end)
+        ].reset_index(drop=True)
+        assert_frame_equal(actual_unaffected, expected_unaffected)
+
+    common_orders = actual["orders"].merge(
+        expected["orders"],
+        on="order_id",
+        suffixes=("_actual", "_expected"),
+    )
+    for field in ("customer_id", "quantity", "is_refund", "status"):
+        assert (
+            common_orders[f"{field}_actual"] == common_orders[f"{field}_expected"]
+        ).all()
+
+
+def test_missing_traffic_is_missing_observation_not_zero_business_activity() -> None:
+    config = load_data_config(CONFIG)
+    anomaly = next(item for item in config.anomalies if item.kind == "missing_traffic")
+    isolated = config.model_copy(update={"anomalies": [anomaly]})
+    counterfactual = config.model_copy(update={"anomalies": []})
+
+    actual = generate_dataset(isolated)
+    expected = generate_dataset(counterfactual)
+
+    assert_frame_equal(actual["marketing"], expected["marketing"])
+    assert_frame_equal(actual["orders"], expected["orders"])
+    target = actual["traffic"][
+        (actual["traffic"]["product_id"] == anomaly.product_id)
+        & actual["traffic"]["date"].between(
+            config.start_date + timedelta(days=anomaly.start_day),
+            config.start_date + timedelta(days=anomaly.end_day),
+        )
+    ]
+    assert target["is_missing"].all()
+    assert target[["impressions", "clicks", "visits"]].isna().all().all()
+
+
+def test_anomaly_window_uses_all_four_inclusive_boundaries() -> None:
+    config = load_data_config(CONFIG)
+    anomaly = config.anomalies[0]
+
+    assert _anomaly_effects(config, anomaly.product_id, anomaly.start_day - 1)[
+        "conversion_multiplier"
+    ] == pytest.approx(1.0)
+    assert _anomaly_effects(config, anomaly.product_id, anomaly.start_day)[
+        "conversion_multiplier"
+    ] == pytest.approx(anomaly.multiplier)
+    assert _anomaly_effects(config, anomaly.product_id, anomaly.end_day)[
+        "conversion_multiplier"
+    ] == pytest.approx(anomaly.multiplier)
+    assert _anomaly_effects(config, anomaly.product_id, anomaly.end_day + 1)[
+        "conversion_multiplier"
+    ] == pytest.approx(1.0)
 
 
 def test_all_seven_configured_anomaly_kinds_map_to_expected_effects() -> None:
