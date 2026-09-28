@@ -29,6 +29,7 @@ dev = [
 ]
 
 [project.scripts]
+build-phase1 = "app.data.phase1:main"
 build-phase1-data = "app.data.generator:main"
 build-evaluation-cases = "app.data.case_generator:main"
 

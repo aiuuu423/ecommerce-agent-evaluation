@@ -133,6 +133,8 @@ def test_gold_sql_is_independent_and_uses_only_catalog_tables() -> None:
         "yaml",
         "synthetic_v1",
         "anomalies",
+        "anomaly_id",
+        "multiplier",
         "config_sha256",
     )
     for sql_path in GOLD_SQL.glob("*.sql"):

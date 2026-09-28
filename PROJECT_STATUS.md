@@ -4,11 +4,12 @@
 
 `PHASE 1 — 模拟数据与 Evaluation Dataset`
 
-状态：`In Progress / Task 12 Completed / Validated / Task 13 Not Started`
+状态：`Completed / Awaiting Review`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
-100 个冻结 Evaluation Cases；快照身份现已绑定生成器源码，只读数据探索 Notebook
-已完成并通过验证，Task 13 尚未开始。
+100 个冻结 Evaluation Cases；统一 CLI 与 `make phase1` 可从双配置在干净输出根目录
+完整复现数据、Cases 和 Manifest。快照身份绑定生成器源码，只读数据探索 Notebook
+已完成真实执行验证。
 
 ## Completed
 
@@ -32,10 +33,14 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - [x] 版本化评测工具契约并修正 GMV、Next-week 与 Adversarial 工具路径。
 - [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
 - [x] 建立只读数据探索 Notebook，并隔离 Holdout 查询句柄。
+- [x] 建立统一 Phase 1 CLI 与可覆盖输出根目录的 Makefile 入口。
+- [x] 验证干净重建的 16 个产物文件与冻结版本逐字节一致。
+- [x] 验证 Gold SQL 不读取生成配置、异常 ID 或异常倍率。
+- [x] 完成 Phase 1 全量测试、静态检查与 Notebook 真实执行。
 
 ## Pending
 
-- [ ] 完成 Phase 1 文档、全量验证与阶段收尾。
+- [ ] 用户审阅 Phase 1 实际交付后进入 Phase 2。
 
 ## Evaluation Results
 
@@ -56,6 +61,7 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 
 - Synthetic Data 和 Evaluation Cases 为模拟数据，只用于受控评测。
 - Holdout 仅用于最终评测；开发过程不得读取其 Gold 内容调优 Agent。
+- Parquet 字节一致性要求使用锁定依赖中的相同 Pandas/PyArrow 写入器版本。
 - Real LLM provider、具体模型和预算尚未确定；不影响 Mock 路径设计。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
 
@@ -73,18 +79,25 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 
 ## Validation
 
-- Task 11 定向测试：`73 passed`。
+- `make PYTHON=<python3.12> PHASE1_OUTPUT_ROOT=<clean-dir> phase1`：PASS。
+- 干净输出与冻结产物比较：`16` 个文件，`0` 个字节差异。
 - Development Dataset ID：`e1e81533c25e03e5`。
+- Development 行数：products `40`、customers `300`、traffic `4,800`、
+  marketing `4,800`、orders `26,941`。
 - Holdout Dataset ID：`c17d4926cfa7cb26`。
+- Holdout 行数：products `40`、customers `300`、traffic `4,800`、
+  marketing `4,800`、orders `26,790`。
 - Generator Source SHA-256：
   `09d6bdcff63ca536277f52a3b17fb7df4d7bb2063399ea47576689643371b630`。
 - Case Set ID：`35d8734343a1492d`；JSONL SHA-256：
   `4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea`。
-- Task 12 Notebook 定向测试：`6 passed`。
-- 全量测试：`353 passed`。
-- CLI：Development、Holdout 与 Evaluation Cases 均成功幂等复用当前冻结快照。
-- Ruff（含 Notebook）：`All checks passed`。
+- Cases：`100`，Development/Holdout Split 为 `70/30`。
+- Gold 独立性与端到端复现定向测试：`2 passed`。
+- 全量测试：`354 passed`。
+- Notebook 结构与真实执行测试：`6 passed`（项目根目录与 `notebooks/` 两种工作目录）。
+- `python -m ruff check app tests notebooks`：`All checks passed!`。
+- `git diff --check`：PASS。
 
 ## Next Step
 
-执行 Task 13，完成 Phase 1 端到端质量门禁；不提前实现 Phase 2 工具。
+等待用户审阅 Phase 1 实际交付；不提前实现 Phase 2 工具。

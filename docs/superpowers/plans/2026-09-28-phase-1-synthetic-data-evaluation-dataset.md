@@ -2825,7 +2825,7 @@ git commit -m "docs(data): add reproducible synthetic data exploration notebook"
 - Modify: `README.md`
 - Modify: `PROJECT_STATUS.md`
 
-- [ ] **Step 1: 增加端到端复现测试**
+- [x] **Step 1: 增加端到端复现测试**
 
 追加到 `tests/test_data_generation.py`：
 
@@ -2850,7 +2850,7 @@ def test_phase1_outputs_are_reproducible(tmp_path) -> None:
     assert file_sha256(first_cases) == file_sha256(second_cases)
 ```
 
-- [ ] **Step 2: 增加 Gold 独立性测试**
+- [x] **Step 2: 增加 Gold 独立性测试**
 
 追加到 `tests/test_gold.py`：
 
@@ -2865,7 +2865,7 @@ def test_gold_sql_does_not_read_generator_config() -> None:
 
 这保证 Gold SQL 只从事实表推导，不直接抄异常配置答案。
 
-- [ ] **Step 3: 运行完整验证**
+- [x] **Step 3: 运行完整验证**
 
 Run:
 
@@ -2885,7 +2885,7 @@ Expected:
 - Git whitespace 检查无错误。
 - 不产生任何 Baseline、Optimized、Latency、Token、Cost 或显著性结果。
 
-- [ ] **Step 4: 更新 README**
+- [x] **Step 4: 更新 README**
 
 在 `README.md` 增加：
 
@@ -2906,7 +2906,7 @@ Expected:
 Phase 1 尚未运行 Agent，因此所有 Agent Evaluation 结果仍为 `Pending / Not Run`。
 ```
 
-- [ ] **Step 5: 更新 Phase 1 状态**
+- [x] **Step 5: 更新 Phase 1 状态**
 
 仅在所有验证通过后修改 `PROJECT_STATUS.md`：
 
@@ -2920,14 +2920,14 @@ Phase 1 尚未运行 Agent，因此所有 Agent Evaluation 结果仍为 `Pending
 
 Completed 增加实际完成项和真实行数；Validation 记录实际执行命令与 PASS 结果；Evaluation Results 只将 Synthetic Dataset 与 Evaluation Dataset 更新为真实生成状态，Agent 相关项目继续保持 `Pending / Not Run`。
 
-- [ ] **Step 6: 创建 Phase 1 验证提交**
+- [x] **Step 6: 创建 Phase 1 验证提交**
 
 ```bash
 git add README.md PROJECT_STATUS.md tests
 git commit -m "test(data): verify phase 1 reproducibility and quality gates"
 ```
 
-- [ ] **Step 7: 检查最终 Git 状态**
+- [x] **Step 7: 检查最终 Git 状态**
 
 Run:
 
@@ -2946,29 +2946,29 @@ Expected:
 
 ## Phase 1 最终验收清单
 
-- [ ] Python 3.11+ 项目可安装。
-- [ ] 无 API Key 时可以运行 Phase 1。
-- [ ] 五张业务表均通过 Schema 与不变量测试。
-- [ ] 数据明确标记为 `Synthetic E-commerce Data`。
-- [ ] 同配置与 Seed 生成相同 Dataset ID。
-- [ ] 配置中的七类异常可在数据中观察到。
-- [ ] 指标定义通过独立手算 Fixture。
-- [ ] Parquet 文件与 Manifest 哈希一致。
-- [ ] DuckDB 只读加载前验证文件哈希。
-- [ ] Gold SQL 不读取异常注入配置。
-- [ ] 五类业务任务均有 Gold Evidence。
-- [ ] 精确生成 100 个 Evaluation Cases。
-- [ ] 五类业务任务各 20 Cases。
-- [ ] 十类 Primary Capability 各 10 Cases。
-- [ ] 难度分布为 30/40/30。
-- [ ] Development/Holdout 分布为 70/30。
-- [ ] Case 不泄漏异常配置。
-- [ ] Case 与 Dataset ID 绑定。
-- [ ] 数据和 Case 可重复生成。
-- [ ] Notebook 明确说明 Synthetic 与局限性。
-- [ ] 完整 Pytest 与 Ruff 检查通过。
-- [ ] `PROJECT_STATUS.md` 记录实际结果。
-- [ ] Agent 相关结果仍显示 `Pending / Not Run`。
+- [x] Python 3.11+ 项目可安装。
+- [x] 无 API Key 时可以运行 Phase 1。
+- [x] 五张业务表均通过 Schema 与不变量测试。
+- [x] 数据明确标记为 `Synthetic E-commerce Data`。
+- [x] 同配置与 Seed 生成相同 Dataset ID。
+- [x] 配置中的七类异常可在数据中观察到。
+- [x] 指标定义通过独立手算 Fixture。
+- [x] Parquet 文件与 Manifest 哈希一致。
+- [x] DuckDB 只读加载前验证文件哈希。
+- [x] Gold SQL 不读取异常注入配置。
+- [x] 五类业务任务均有 Gold Evidence。
+- [x] 精确生成 100 个 Evaluation Cases。
+- [x] 五类业务任务各 20 Cases。
+- [x] 十类 Primary Capability 各 10 Cases。
+- [x] 难度分布为 30/40/30。
+- [x] Development/Holdout 分布为 70/30。
+- [x] Case 不泄漏异常配置。
+- [x] Case 与 Dataset ID 绑定。
+- [x] 数据和 Case 可重复生成。
+- [x] Notebook 明确说明 Synthetic 与局限性。
+- [x] 完整 Pytest 与 Ruff 检查通过。
+- [x] `PROJECT_STATUS.md` 记录实际结果。
+- [x] Agent 相关结果仍显示 `Pending / Not Run`。
 
 ## 停止条件
 

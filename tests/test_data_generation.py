@@ -1,3 +1,6 @@
+import json
+import subprocess
+import sys
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -493,3 +496,94 @@ def test_configured_anomalies_are_observable_in_generated_facts() -> None:
 
     assert visits(current_traffic, "P007") < visits(previous_traffic, "P007")
     assert order_count(current_orders, "P007") < order_count(previous_orders, "P007")
+
+
+def test_phase1_clean_build_is_reproducible_and_matches_frozen_artifacts(
+    tmp_path: Path,
+) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+
+    for output_root in (first_root, second_root):
+        completed = subprocess.run(
+            [
+                "make",
+                f"PYTHON={sys.executable}",
+                f"PHASE1_OUTPUT_ROOT={output_root}",
+                "phase1",
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    first = {
+        "development": json.loads(
+            (first_root / "synthetic/v1/manifest.json").read_text(encoding="utf-8")
+        ),
+        "holdout": json.loads(
+            (first_root / "synthetic/holdout-v1/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        ),
+        "cases": json.loads(
+            (first_root / "evaluation_cases/v1/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        ),
+    }
+    second = {
+        "development": json.loads(
+            (second_root / "synthetic/v1/manifest.json").read_text(encoding="utf-8")
+        ),
+        "holdout": json.loads(
+            (second_root / "synthetic/holdout-v1/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        ),
+        "cases": json.loads(
+            (second_root / "evaluation_cases/v1/manifest.json").read_text(
+                encoding="utf-8"
+            )
+        ),
+    }
+
+    assert first["development"]["dataset_id"] == second["development"]["dataset_id"]
+    assert first["holdout"]["dataset_id"] == second["holdout"]["dataset_id"]
+    assert first["cases"]["case_set_id"] == second["cases"]["case_set_id"]
+    assert (
+        first["development"]["dataset_id"]
+        != first["holdout"]["dataset_id"]
+    )
+
+    artifact_directories = (
+        Path("synthetic/v1"),
+        Path("synthetic/holdout-v1"),
+        Path("evaluation_cases/v1"),
+    )
+    for relative_directory in artifact_directories:
+        first_files = sorted(
+            path.relative_to(first_root)
+            for path in (first_root / relative_directory).iterdir()
+            if path.is_file()
+        )
+        second_files = sorted(
+            path.relative_to(second_root)
+            for path in (second_root / relative_directory).iterdir()
+            if path.is_file()
+        )
+        frozen_files = sorted(
+            path.relative_to(ROOT / "data")
+            for path in (ROOT / "data" / relative_directory).iterdir()
+            if path.is_file()
+        )
+        assert first_files == second_files == frozen_files
+        for relative_file in first_files:
+            assert (first_root / relative_file).read_bytes() == (
+                second_root / relative_file
+            ).read_bytes()
+            assert (first_root / relative_file).read_bytes() == (
+                ROOT / "data" / relative_file
+            ).read_bytes()
