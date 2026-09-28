@@ -274,6 +274,7 @@ def _tool_parameters(
     tool_name: str,
     rows: list[dict[str, Any]],
     metric_names: list[str],
+    distractor_product_id: str | None = None,
 ) -> dict[str, Any]:
     first = rows[0]
     product_ids = _product_ids(rows)
@@ -285,7 +286,10 @@ def _tool_parameters(
         "product_ids": product_ids,
     }
     if tool_name == "query_product":
-        return {"product_ids": product_ids}
+        query_product_ids = set(product_ids)
+        if distractor_product_id is not None:
+            query_product_ids.add(distractor_product_id)
+        return {"product_ids": sorted(query_product_ids)}
     if tool_name == "query_sales":
         return {**windows, "include_refunds": True}
     if tool_name == "query_traffic":
@@ -574,7 +578,10 @@ def build_cases(
                             {
                                 "name": tool_name,
                                 "parameters": _tool_parameters(
-                                    tool_name, rows, base_metrics
+                                    tool_name,
+                                    rows,
+                                    base_metrics,
+                                    distractor,
                                 ),
                             }
                             for tool_name in tool_names

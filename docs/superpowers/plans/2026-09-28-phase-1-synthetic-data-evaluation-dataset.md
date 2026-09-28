@@ -160,7 +160,7 @@ data/evaluation_cases/evaluation_cases_v1.manifest.json
 - Create: `data/evaluation_cases/.gitkeep`
 - Create: `data/results/.gitkeep`
 
-- [ ] **Step 1: 写项目元数据测试**
+- [x] **Step 1: 写项目元数据测试**
 
 在 `tests/test_project_setup.py` 写入：
 
@@ -190,7 +190,7 @@ def test_generated_outputs_are_ignored_but_keep_files_are_trackable() -> None:
     assert "data/evaluation_cases/*.jsonl" in ignore
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -200,7 +200,7 @@ python3 -m pytest tests/test_project_setup.py -v
 
 Expected: FAIL，因为 `pyproject.toml` 和 `.gitignore` 尚不存在。
 
-- [ ] **Step 3: 创建最小项目配置**
+- [x] **Step 3: 创建最小项目配置**
 
 `pyproject.toml`：
 
@@ -332,7 +332,7 @@ def project_root() -> Path:
     return Path(__file__).parents[1]
 ```
 
-- [ ] **Step 4: 安装依赖并运行测试**
+- [x] **Step 4: 安装依赖并运行测试**
 
 Run:
 
@@ -344,7 +344,7 @@ python3 -m ruff check tests/test_project_setup.py
 
 Expected: 全部 PASS；安装命令不得要求 API Key。
 
-- [ ] **Step 5: 提交骨架**
+- [x] **Step 5: 提交骨架**
 
 ```bash
 git add pyproject.toml .gitignore .env.example Makefile README.md app tests data
@@ -359,7 +359,7 @@ git commit -m "build: initialize phase 1 python project"
 - Create: `app/data/schemas.py`
 - Create: `tests/test_data_schemas.py`
 
-- [ ] **Step 1: 写 Schema 失败测试**
+- [x] **Step 1: 写 Schema 失败测试**
 
 `tests/test_data_schemas.py`：
 
@@ -411,7 +411,7 @@ def test_order_revenue_must_equal_quantity_times_unit_price() -> None:
         )
 ```
 
-- [ ] **Step 2: 运行测试确认导入失败**
+- [x] **Step 2: 运行测试确认导入失败**
 
 Run:
 
@@ -421,7 +421,7 @@ python3 -m pytest tests/test_data_schemas.py -v
 
 Expected: FAIL，提示 `app.data.schemas` 不存在。
 
-- [ ] **Step 3: 实现严格 Schema**
+- [x] **Step 3: 实现严格 Schema**
 
 `app/data/schemas.py`：
 
@@ -510,7 +510,7 @@ class OrderRow(StrictModel):
         return self
 ```
 
-- [ ] **Step 4: 运行 Schema 测试与静态检查**
+- [x] **Step 4: 运行 Schema 测试与静态检查**
 
 Run:
 
@@ -521,7 +521,7 @@ python3 -m ruff check app/data/schemas.py tests/test_data_schemas.py
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交 Schema**
+- [x] **Step 5: 提交 Schema**
 
 ```bash
 git add app/data/schemas.py tests/test_data_schemas.py
@@ -537,7 +537,7 @@ git commit -m "feat(data): define strict ecommerce table schemas"
 - Create: `app/data/config.py`
 - Create: `tests/test_data_config.py`
 
-- [ ] **Step 1: 写配置解析失败测试**
+- [x] **Step 1: 写配置解析失败测试**
 
 `tests/test_data_config.py`：
 
@@ -589,7 +589,7 @@ def test_rejects_anomaly_outside_dataset_window() -> None:
         )
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -599,7 +599,7 @@ python3 -m pytest tests/test_data_config.py -v
 
 Expected: FAIL，提示配置模块不存在。
 
-- [ ] **Step 3: 写配置文件**
+- [x] **Step 3: 写配置文件**
 
 `configs/data/synthetic_v1.yaml`：
 
@@ -625,7 +625,7 @@ anomalies:
   - {anomaly_id: A07, kind: multi_factor_drop, product_id: P007, start_day: 90, end_day: 119, multiplier: 0.70}
 ```
 
-- [ ] **Step 4: 实现配置模型与哈希**
+- [x] **Step 4: 实现配置模型与哈希**
 
 `app/data/config.py`：
 
@@ -696,7 +696,7 @@ def config_sha256(path: Path | str) -> str:
     return sha256(path.read_bytes()).hexdigest()
 ```
 
-- [ ] **Step 5: 运行测试并提交**
+- [x] **Step 5: 运行测试并提交**
 
 Run:
 
@@ -720,7 +720,7 @@ git commit -m "feat(data): add versioned synthetic data configuration"
 - Create: `app/data/generator.py`
 - Create: `tests/test_data_generation.py`
 
-- [ ] **Step 1: 写 products 与 customers 的失败测试**
+- [x] **Step 1: 写 products 与 customers 的失败测试**
 
 `tests/test_data_generation.py`：
 
@@ -755,7 +755,7 @@ def test_dimension_ids_are_unique_and_counts_match() -> None:
     assert (products["cost"] < products["price"]).all()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -765,7 +765,7 @@ python3 -m pytest tests/test_data_generation.py -v
 
 Expected: FAIL，因为生成函数不存在。
 
-- [ ] **Step 3: 实现维度表生成**
+- [x] **Step 3: 实现维度表生成**
 
 `app/data/generator.py` 首个增量：
 
@@ -816,7 +816,7 @@ def generate_customers(config: SyntheticDataConfig) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("customer_id").reset_index(drop=True)
 ```
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run:
 
@@ -827,7 +827,7 @@ python3 -m ruff check app/data/generator.py tests/test_data_generation.py
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交维度生成器**
+- [x] **Step 5: 提交维度生成器**
 
 ```bash
 git add app/data/generator.py tests/test_data_generation.py
@@ -842,7 +842,7 @@ git commit -m "feat(data): generate deterministic product and customer dimension
 - Modify: `app/data/generator.py`
 - Modify: `tests/test_data_generation.py`
 
-- [ ] **Step 1: 写事实表与异常失败测试**
+- [x] **Step 1: 写事实表与异常失败测试**
 
 追加到 `tests/test_data_generation.py`：
 
@@ -909,7 +909,7 @@ def test_configured_anomalies_are_observable() -> None:
     assert order_count(current_orders, "P007") < order_count(previous_orders, "P007")
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -919,7 +919,7 @@ python3 -m pytest tests/test_data_generation.py -v
 
 Expected: FAIL，因为 `generate_dataset` 不存在。
 
-- [ ] **Step 3: 实现每日率与异常应用**
+- [x] **Step 3: 实现每日率与异常应用**
 
 在 `app/data/generator.py` 增加：
 
@@ -957,7 +957,7 @@ def _anomaly_effects(
     return effects
 ```
 
-- [ ] **Step 4: 实现事实表生成**
+- [x] **Step 4: 实现事实表生成**
 
 继续在 `app/data/generator.py` 增加：
 
@@ -1062,7 +1062,7 @@ def generate_dataset(config: SyntheticDataConfig) -> dict[str, pd.DataFrame]:
     }
 ```
 
-- [ ] **Step 5: 运行测试并检查确定性**
+- [x] **Step 5: 运行测试并检查确定性**
 
 Run:
 
@@ -1073,7 +1073,7 @@ python3 -m ruff check app/data/generator.py tests/test_data_generation.py
 
 Expected: 全部 PASS；同一配置两次生成的五张表完全一致。
 
-- [ ] **Step 6: 提交事实生成器**
+- [x] **Step 6: 提交事实生成器**
 
 ```bash
 git add app/data/generator.py tests/test_data_generation.py
@@ -1090,7 +1090,7 @@ git commit -m "feat(data): generate ecommerce facts with configured anomalies"
 - Create: `tests/fixtures/hand_checked_metrics.json`
 - Create: `tests/test_data_validation.py`
 
-- [ ] **Step 1: 创建手算 Fixture**
+- [x] **Step 1: 创建手算 Fixture**
 
 `tests/fixtures/hand_checked_metrics.json`：
 
@@ -1114,7 +1114,7 @@ git commit -m "feat(data): generate ecommerce facts with configured anomalies"
 }
 ```
 
-- [ ] **Step 2: 写指标与质量失败测试**
+- [x] **Step 2: 写指标与质量失败测试**
 
 `tests/test_data_validation.py`：
 
@@ -1150,7 +1150,7 @@ def test_generated_dataset_passes_quality_checks() -> None:
     assert report["failed_checks"] == []
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x] **Step 3: 运行测试确认失败**
 
 Run:
 
@@ -1160,7 +1160,7 @@ python3 -m pytest tests/test_data_validation.py -v
 
 Expected: FAIL，因为指标和校验模块不存在。
 
-- [ ] **Step 4: 实现安全指标**
+- [x] **Step 4: 实现安全指标**
 
 `app/data/metrics.py`：
 
@@ -1267,7 +1267,7 @@ def validate_dataset(
     }
 ```
 
-- [ ] **Step 5: 运行测试并提交**
+- [x] **Step 5: 运行测试并提交**
 
 Run:
 
@@ -1292,7 +1292,7 @@ git commit -m "feat(data): validate ecommerce invariants and metric definitions"
 - Create: `tests/test_data_manifest.py`
 - Modify: `app/data/generator.py`
 
-- [ ] **Step 1: 写快照失败测试**
+- [x] **Step 1: 写快照失败测试**
 
 `tests/test_data_manifest.py`：
 
@@ -1325,7 +1325,7 @@ def test_snapshot_writes_parquet_and_stable_manifest(tmp_path) -> None:
     assert on_disk == first
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -1335,7 +1335,7 @@ python3 -m pytest tests/test_data_manifest.py -v
 
 Expected: FAIL，因为 `build_snapshot` 不存在。
 
-- [ ] **Step 3: 实现稳定 Manifest**
+- [x] **Step 3: 实现稳定 Manifest**
 
 `app/data/manifest.py`：
 
@@ -1366,7 +1366,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 ```
 
-- [ ] **Step 4: 实现快照构建入口**
+- [x] **Step 4: 实现快照构建入口**
 
 在 `app/data/generator.py` 增加：
 
@@ -1428,7 +1428,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 5: 运行快照测试与真实构建**
+- [x] **Step 5: 运行快照测试与真实构建**
 
 Run:
 
@@ -1451,7 +1451,7 @@ python3 -c "import json; from pathlib import Path; p=Path('data/synthetic/v1/man
 
 Expected: 输出 Dataset ID 与五张表的非零行数，不输出随机效果指标。
 
-- [ ] **Step 6: 提交快照逻辑**
+- [x] **Step 6: 提交快照逻辑**
 
 ```bash
 git add app/data/generator.py app/data/manifest.py tests/test_data_manifest.py
@@ -1466,7 +1466,7 @@ git commit -m "feat(data): persist versioned parquet snapshots and manifest"
 - Create: `app/data/database.py`
 - Create: `tests/test_database.py`
 
-- [ ] **Step 1: 写 Catalog 失败测试**
+- [x] **Step 1: 写 Catalog 失败测试**
 
 `tests/test_database.py`：
 
@@ -1504,7 +1504,7 @@ def test_open_dataset_rejects_tampered_file(tmp_path) -> None:
         raise AssertionError("tampered dataset must be rejected")
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -1514,7 +1514,7 @@ python3 -m pytest tests/test_database.py -v
 
 Expected: FAIL，因为数据库模块不存在。
 
-- [ ] **Step 3: 实现 Manifest 校验与只读 View**
+- [x] **Step 3: 实现 Manifest 校验与只读 View**
 
 `app/data/database.py`：
 
@@ -1541,7 +1541,7 @@ def open_dataset(dataset_dir: Path) -> duckdb.DuckDBPyConnection:
     return connection
 ```
 
-- [ ] **Step 4: 运行测试并提交**
+- [x] **Step 4: 运行测试并提交**
 
 Run:
 
@@ -1565,7 +1565,7 @@ git commit -m "feat(data): expose verified parquet snapshots through duckdb"
 - Modify: `app/data/schemas.py`
 - Create: `tests/test_case_generator.py`
 
-- [ ] **Step 1: 写 Case Schema 失败测试**
+- [x] **Step 1: 写 Case Schema 失败测试**
 
 `tests/test_case_generator.py`：
 
@@ -1642,7 +1642,7 @@ def test_case_schema_rejects_unmapped_gold_metric() -> None:
         EvaluationCase.model_validate(payload)
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -1652,7 +1652,7 @@ python3 -m pytest tests/test_case_generator.py -v
 
 Expected: FAIL，因为 `EvaluationCase` 不存在。
 
-- [ ] **Step 3: 增加 Case 相关模型**
+- [x] **Step 3: 增加 Case 相关模型**
 
 追加到 `app/data/schemas.py`：
 
@@ -1746,7 +1746,7 @@ class EvaluationCase(StrictModel):
 `EV_<BUSINESS_TASK>_<ROW_NUMBER>`；编号来自对应 Gold SQL 的确定性排序，与
 `case_id`、Case Split 和 Case 生成顺序无关。
 
-- [ ] **Step 4: 运行测试并提交**
+- [x] **Step 4: 运行测试并提交**
 
 Run:
 
@@ -1775,7 +1775,7 @@ git commit -m "feat(evaluation-data): define traceable evaluation case schema"
 - Create: `app/data/gold.py`
 - Create: `tests/test_gold.py`
 
-- [ ] **Step 1: 写 Gold 查询失败测试**
+- [x] **Step 1: 写 Gold 查询失败测试**
 
 `tests/test_gold.py`：
 
@@ -1817,7 +1817,7 @@ def test_gold_detects_configured_conversion_drop(tmp_path) -> None:
     assert "P003" in product_ids
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -1827,7 +1827,7 @@ python3 -m pytest tests/test_gold.py -v
 
 Expected: FAIL，因为 Gold 模块和 SQL 不存在。
 
-- [ ] **Step 3: 写窗口化 Gold SQL**
+- [x] **Step 3: 写窗口化 Gold SQL**
 
 `sql/gold/gmv_change.sql`：
 
@@ -2139,7 +2139,7 @@ order by
 limit 10;
 ```
 
-- [ ] **Step 4: 实现 SQL 执行与 Evidence ID**
+- [x] **Step 4: 实现 SQL 执行与 Evidence ID**
 
 `app/data/gold.py`：
 
@@ -2207,7 +2207,7 @@ Evidence ID 必须固定为 `EV_<BUSINESS_TASK>_<ROW_NUMBER>`。每份 Gold SQL
 必须以稳定键显式排序后再编号；同一 Dataset Manifest 重复构建 Gold Bundle
 时，Evidence ID 不得随 Case 数量、Split 或遍历顺序变化。
 
-- [ ] **Step 5: 完成三份规则 SQL 与测试**
+- [x] **Step 5: 完成三份规则 SQL 与测试**
 
 为三份 SQL 分别加入以下断言：
 
@@ -2232,7 +2232,7 @@ python3 -m ruff check app/data/gold.py tests/test_gold.py
 
 Expected: 全部 PASS；`P003` 出现在 CVR 下降证据中。
 
-- [ ] **Step 6: 提交 Gold 层**
+- [x] **Step 6: 提交 Gold 层**
 
 ```bash
 git add sql/gold app/data/gold.py tests/test_gold.py
@@ -2272,7 +2272,7 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 - 本段约束取代下方早期示例中单 Dataset、单文件原地写入和未版本化工具路径的
   设计；下方代码块仅保留为历史实施草案。
 
-- [ ] **Step 1: 写数量、覆盖和 Split 失败测试**
+- [x] **Step 1: 写数量、覆盖和 Split 失败测试**
 
 追加到 `tests/test_case_generator.py`：
 
@@ -2345,7 +2345,7 @@ def test_build_cases_rejects_invalid_dataset_manifest(tmp_path) -> None:
         build_cases(dataset_dir)
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run:
 
@@ -2355,7 +2355,7 @@ python3 -m pytest tests/test_case_generator.py -v
 
 Expected: FAIL，因为 `build_cases` 不存在。
 
-- [ ] **Step 3: 实现确定性 Case 矩阵**
+- [x] **Step 3: 实现确定性 Case 矩阵**
 
 `app/data/case_generator.py`：
 
@@ -2589,7 +2589,7 @@ def build_cases(dataset_dir: Path) -> list[EvaluationCase]:
     return cases
 ```
 
-- [ ] **Step 4: 实现 JSONL 与 Manifest 输出**
+- [x] **Step 4: 实现 JSONL 与 Manifest 输出**
 
 继续在 `app/data/case_generator.py` 增加：
 
@@ -2637,7 +2637,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 5: 增加防泄漏测试**
+- [x] **Step 5: 增加防泄漏测试**
 
 追加到 `tests/test_case_generator.py`：
 
@@ -2653,7 +2653,7 @@ def test_cases_do_not_expose_anomaly_config_or_holdout_answers(tmp_path) -> None
     assert all("source_label" in case.metadata for case in cases)
 ```
 
-- [ ] **Step 6: 运行测试与真实构建**
+- [x] **Step 6: 运行测试与真实构建**
 
 Run:
 
@@ -2682,7 +2682,7 @@ python3 -c "import json; from pathlib import Path; p=Path('data/evaluation_cases
 
 Expected: 输出真实 Manifest；不包含任何 Agent 效果指标。
 
-- [ ] **Step 7: 提交 Case 生成器**
+- [x] **Step 7: 提交 Case 生成器**
 
 ```bash
 git add .gitignore Makefile PROJECT_STATUS.md app/data/case_generator.py \

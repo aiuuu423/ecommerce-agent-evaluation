@@ -20,7 +20,7 @@
   },
   "case_count": 100,
   "case_schema_version": "1.1",
-  "case_set_id": "e16b2f7579fe28e8",
+  "case_set_id": "5e250d180ca6552c",
   "datasets": {
     "development": {
       "dataset_id": "e1e81533c25e03e5",
@@ -38,7 +38,7 @@
     "hard": 30,
     "medium": 40
   },
-  "jsonl_sha256": "31c626b2a9c4c6813121fb70982564722c9ce449d2db198f5f4804dfb8265b97",
+  "jsonl_sha256": "dbeab9fc9466d71fb4a425b01ccc4709674c81fe361839896d4799fcb84babae",
   "source_label": "Synthetic E-commerce Data",
   "split_counts": {
     "development": 70,

@@ -4,10 +4,10 @@
 
 `PHASE 1 — 模拟数据与 Evaluation Dataset`
 
-状态：`In Progress / Task 11 Completed`
+状态：`In Progress / Task 11 Completed / Task 12 Not Started`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
-100 个冻结 Evaluation Cases，下一步进入数据探索 Notebook。
+100 个冻结 Evaluation Cases；Task 11 已完成，Task 12 尚未开始。
 
 ## Completed
 
@@ -56,7 +56,6 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - Synthetic Data 和 Evaluation Cases 为模拟数据，只用于受控评测。
 - Holdout 仅用于最终评测；开发过程不得读取其 Gold 内容调优 Agent。
 - Real LLM provider、具体模型和预算尚未确定；不影响 Mock 路径设计。
-- Evaluation Dataset 的 Case 分布与难度比例将在 Phase 1 实施计划中冻结。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
 
 ## Decisions
@@ -76,8 +75,8 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - Task 11 定向测试：`71 passed`。
 - Development Dataset ID：`e1e81533c25e03e5`。
 - Holdout Dataset ID：`c17d4926cfa7cb26`。
-- Case Set ID：`e16b2f7579fe28e8`；JSONL SHA-256：
-  `31c626b2a9c4c6813121fb70982564722c9ce449d2db198f5f4804dfb8265b97`。
+- Case Set ID：`5e250d180ca6552c`；JSONL SHA-256：
+  `dbeab9fc9466d71fb4a425b01ccc4709674c81fe361839896d4799fcb84babae`。
 - 全量测试：`342 passed`。
 - Ruff：`All checks passed`。
 

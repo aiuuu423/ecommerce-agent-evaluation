@@ -743,8 +743,12 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
             for row in gold["tasks"][task]["evidence"]
         }
         distractor = case.metadata["distractor_product_id"]
+        query_product = next(
+            call for call in case.expected_tool_calls if call.name == "query_product"
+        )
         assert distractor in products
         assert distractor not in product_gold_union
+        assert distractor in query_product.parameters["product_ids"]
         assert distractor in case.user_input
         assert case.metadata["distractor_assertion_supported"] is False
         assert f"{distractor}是唯一主因的断言为假" in case.reference_answer
