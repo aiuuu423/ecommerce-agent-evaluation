@@ -1,13 +1,20 @@
+import argparse
+import os
+import shutil
+import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
+from pathlib import Path
 from typing import TypeVar
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
-from app.data.config import SyntheticDataConfig
+from app.data.config import SyntheticDataConfig, load_data_config_with_sha256
+from app.data.manifest import contained_path, file_sha256, manifest_id, write_json
 from app.data.schemas import (
     CustomerRow,
     MarketingRow,
@@ -15,6 +22,7 @@ from app.data.schemas import (
     ProductRow,
     TrafficRow,
 )
+from app.data.validation import TABLE_NAMES, validate_dataset
 
 CENT = Decimal("0.01")
 PRICE_MIN = 30
@@ -395,3 +403,88 @@ def generate_dataset(config: SyntheticDataConfig) -> dict[str, pd.DataFrame]:
         "marketing": pd.DataFrame(marketing_rows),
         "orders": pd.DataFrame(order_rows),
     }
+
+
+def _publish_snapshot(staging_dir: Path, output_dir: Path) -> None:
+    if output_dir.exists() and not output_dir.is_dir():
+        raise ValueError(f"snapshot output is not a directory: {output_dir}")
+
+    backup_dir: Path | None = None
+    if output_dir.exists():
+        backup_dir = output_dir.parent / f".{output_dir.name}.backup-{uuid4().hex}"
+        os.replace(output_dir, backup_dir)
+
+    try:
+        os.replace(staging_dir, output_dir)
+    except BaseException:
+        if backup_dir is not None:
+            os.replace(backup_dir, output_dir)
+        raise
+    else:
+        if backup_dir is not None:
+            shutil.rmtree(backup_dir)
+
+
+def build_snapshot(
+    config_path: Path | str,
+    output_dir: Path | str | None = None,
+) -> dict[str, object]:
+    config, config_digest = load_data_config_with_sha256(config_path)
+    tables = generate_dataset(config)
+    quality = validate_dataset(tables, config)
+    if quality["status"] != "pass":
+        raise ValueError(f"dataset quality failed: {quality['failed_checks']}")
+
+    output = (
+        Path(output_dir)
+        if output_dir is not None
+        else Path("data/synthetic") / config.dataset_version
+    ).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
+    ).resolve()
+
+    try:
+        table_manifest: dict[str, dict[str, object]] = {}
+        for name in TABLE_NAMES:
+            table_path = contained_path(staging, f"{name}.parquet")
+            tables[name].to_parquet(table_path, index=False)
+            table_manifest[name] = {
+                "file": table_path.name,
+                "rows": len(tables[name]),
+                "sha256": file_sha256(table_path),
+            }
+
+        identity: dict[str, object] = {
+            "dataset_version": config.dataset_version,
+            "schema_version": config.schema_version,
+            "source_label": config.source_label,
+            "seed": config.seed,
+            "config_sha256": config_digest,
+            "tables": table_manifest,
+        }
+        manifest = {"dataset_id": manifest_id(identity), **identity}
+        write_json(contained_path(staging, "manifest.json"), manifest)
+        write_json(contained_path(staging, "data_quality_report.json"), quality)
+        _publish_snapshot(staging, output)
+    except BaseException:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+
+    return manifest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build the Phase 1 data snapshot")
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+
+    manifest = build_snapshot(args.config, args.output)
+    print(f"Built {manifest['source_label']} snapshot {manifest['dataset_id']}")
+
+
+if __name__ == "__main__":
+    main()
