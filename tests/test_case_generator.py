@@ -373,13 +373,23 @@ def test_case_schema_requires_the_exact_unique_success_gates(
         EvaluationCase.model_validate(payload)
 
 
-@pytest.mark.parametrize("tolerance", [-0.001, inf, nan])
-def test_case_schema_rejects_invalid_numeric_tolerances(tolerance: float) -> None:
+@pytest.mark.parametrize("tolerance", ["0.001", True, -0.001, inf, nan])
+def test_case_schema_rejects_invalid_numeric_tolerances(tolerance: object) -> None:
     payload = valid_case()
     payload["numeric_tolerances"] = {"gmv_change_rate": tolerance}
 
     with pytest.raises(ValidationError):
         EvaluationCase.model_validate(payload)
+
+
+def test_case_schema_accepts_finite_float_numeric_tolerance() -> None:
+    payload = valid_case()
+    payload["numeric_tolerances"] = {"gmv_change_rate": 0.001}
+
+    case = EvaluationCase.model_validate(payload)
+
+    assert case.numeric_tolerances["gmv_change_rate"] == 0.001
+    assert type(case.numeric_tolerances["gmv_change_rate"]) is float
 
 
 def test_case_schema_requires_tolerances_for_float_gold_metrics() -> None:

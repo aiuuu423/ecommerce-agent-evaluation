@@ -9,7 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from typing_extensions import TypeAliasType
 
 Money = Annotated[Decimal, Field(decimal_places=2)]
-NumericTolerance = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+NumericTolerance = Annotated[
+    float,
+    Field(strict=True, ge=0, allow_inf_nan=False),
+]
 ProductId = Annotated[str, Field(pattern=r"^P[0-9]{3}$")]
 CustomerId = Annotated[str, Field(pattern=r"^C[0-9]{4}$")]
 OrderId = Annotated[
