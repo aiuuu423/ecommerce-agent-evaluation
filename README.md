@@ -1,6 +1,7 @@
 # 多版本 Agent 效果评测与错误归因分析
 
-当前阶段：PHASE 1 规划已批准，实验结果均为 `Pending / Not Run`。
+当前阶段：`PHASE 1 — Completed / Awaiting Review`。Agent 实验结果仍为
+`Pending / Not Run`。
 
 本项目使用明确标记的 Synthetic E-commerce Data 构建可复现的 Agent Evaluation 闭环。
 
@@ -54,6 +55,8 @@ python3.12 -m app.data.phase1 \
 | orders | 26,941 | 26,790 |
 
 - 两套五表 Parquet 快照均包含 Dataset Manifest、文件哈希与数据质量报告。
+- 独立 SHA-256 基线记录 16 个 Phase 1 产物的相对路径、哈希、Dataset IDs 与
+  Case Set ID；端到端测试使用临时干净构建与该提交基线比较。
 - Case Set ID 为 `35d8734343a1492d`，共 100 个 Cases，Development/Holdout 为
   `70/30`，JSONL SHA-256 为
   `4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea`。

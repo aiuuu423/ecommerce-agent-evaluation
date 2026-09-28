@@ -1,0 +1,75 @@
+{
+  "artifact_count": 16,
+  "artifacts": [
+    {
+      "path": "evaluation_cases/v1/cases.jsonl",
+      "sha256": "4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea"
+    },
+    {
+      "path": "evaluation_cases/v1/manifest.json",
+      "sha256": "2325f9802f8298abc61ca1b0dba9e32d88bf1a350837011ae2f5e177a39a4e53"
+    },
+    {
+      "path": "synthetic/holdout-v1/customers.parquet",
+      "sha256": "641c6d1a0a57ab07b2ba2e5c309c089b01abb36b91448268679736f415a99a75"
+    },
+    {
+      "path": "synthetic/holdout-v1/data_quality_report.json",
+      "sha256": "12524fd444ef9dc99a06c7001bca51d57b3ecadf30c99c2fc182825af5f4f166"
+    },
+    {
+      "path": "synthetic/holdout-v1/manifest.json",
+      "sha256": "3309a17ad3c150cb235fa3b480f4b5a999f80166a0c876e5b34e297569491ee6"
+    },
+    {
+      "path": "synthetic/holdout-v1/marketing.parquet",
+      "sha256": "acc5e39b6d41711023405b0327844d38ed0695740e5bdd293cd70e0500355f70"
+    },
+    {
+      "path": "synthetic/holdout-v1/orders.parquet",
+      "sha256": "55816ea07793f0e89f9e150055d8652485ed034fe7a9c86e2715446efb4ddf58"
+    },
+    {
+      "path": "synthetic/holdout-v1/products.parquet",
+      "sha256": "2fa24e7a56276c0528fae5f229cc4619bcebbed9bb34670814e37c5b2f0fb5a9"
+    },
+    {
+      "path": "synthetic/holdout-v1/traffic.parquet",
+      "sha256": "257d489d4a12c0eac343a7e1c1f0b3733bf4581d5d13f8d3f0fca9208f2f832f"
+    },
+    {
+      "path": "synthetic/v1/customers.parquet",
+      "sha256": "cc529fffdfdfac5a2c1ac3409bdf5c032cf3d767da7dbcced19d0d881d7975f3"
+    },
+    {
+      "path": "synthetic/v1/data_quality_report.json",
+      "sha256": "1a6bbc239be63db93e20f9d0a3d7c97c9e2644796af3f2165009e7b5a033138e"
+    },
+    {
+      "path": "synthetic/v1/manifest.json",
+      "sha256": "dc3ee75addec72b71d3e18df7dd7a8dc06a8ec514629389e47f1873df11e7b6b"
+    },
+    {
+      "path": "synthetic/v1/marketing.parquet",
+      "sha256": "d9f1ecf62b5f507708ab5f1132450e8a6c575ad27dac042cd59f6794bf27022d"
+    },
+    {
+      "path": "synthetic/v1/orders.parquet",
+      "sha256": "bf381929d760b617a1a150466c06d621b7d40b01a804bba2172eb1f3d63b67f7"
+    },
+    {
+      "path": "synthetic/v1/products.parquet",
+      "sha256": "0bfd606c9afa5fb89bab664fefae001d5c44122bbfcfe4474cb2402ff049fedf"
+    },
+    {
+      "path": "synthetic/v1/traffic.parquet",
+      "sha256": "7be9637275b5d6e98a857da64c1a28dab1adf245fd20a19e5136af76733c307e"
+    }
+  ],
+  "case_set_id": "35d8734343a1492d",
+  "dataset_ids": {
+    "development": "e1e81533c25e03e5",
+    "holdout": "c17d4926cfa7cb26"
+  },
+  "schema_version": "1.0"
+}

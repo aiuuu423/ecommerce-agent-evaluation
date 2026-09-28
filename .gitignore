@@ -11,6 +11,7 @@ __pycache__/
 
 data/synthetic/*
 !data/synthetic/.gitkeep
+!data/synthetic/phase1_sha256_baseline.json
 data/evaluation_cases/*.jsonl
 data/evaluation_cases/*.manifest.json
 data/evaluation_cases/*

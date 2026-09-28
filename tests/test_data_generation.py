@@ -19,10 +19,12 @@ from app.data.generator import (
     generate_dataset,
     generate_products,
 )
+from app.data.manifest import file_sha256
 from app.data.schemas import CustomerRow, MarketingRow, OrderRow, ProductRow, TrafficRow
 
 ROOT = Path(__file__).parents[1]
 CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
+PHASE1_BASELINE = ROOT / "data/synthetic/phase1_sha256_baseline.json"
 
 
 def test_dimension_generation_is_deterministic() -> None:
@@ -498,92 +500,60 @@ def test_configured_anomalies_are_observable_in_generated_facts() -> None:
     assert order_count(current_orders, "P007") < order_count(previous_orders, "P007")
 
 
-def test_phase1_clean_build_is_reproducible_and_matches_frozen_artifacts(
-    tmp_path: Path,
-) -> None:
-    first_root = tmp_path / "first"
-    second_root = tmp_path / "second"
+def test_phase1_clean_build_matches_committed_sha256_baseline(tmp_path: Path) -> None:
+    output_root = tmp_path / "phase1"
+    completed = subprocess.run(
+        [
+            "make",
+            f"PYTHON={sys.executable}",
+            f"PHASE1_OUTPUT_ROOT={output_root}",
+            "phase1",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
-    for output_root in (first_root, second_root):
-        completed = subprocess.run(
-            [
-                "make",
-                f"PYTHON={sys.executable}",
-                f"PHASE1_OUTPUT_ROOT={output_root}",
-                "phase1",
-            ],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert completed.returncode == 0, completed.stderr
-
-    first = {
+    manifests = {
         "development": json.loads(
-            (first_root / "synthetic/v1/manifest.json").read_text(encoding="utf-8")
+            (output_root / "synthetic/v1/manifest.json").read_text(encoding="utf-8")
         ),
         "holdout": json.loads(
-            (first_root / "synthetic/holdout-v1/manifest.json").read_text(
+            (output_root / "synthetic/holdout-v1/manifest.json").read_text(
                 encoding="utf-8"
             )
         ),
         "cases": json.loads(
-            (first_root / "evaluation_cases/v1/manifest.json").read_text(
+            (output_root / "evaluation_cases/v1/manifest.json").read_text(
                 encoding="utf-8"
             )
         ),
     }
-    second = {
-        "development": json.loads(
-            (second_root / "synthetic/v1/manifest.json").read_text(encoding="utf-8")
-        ),
-        "holdout": json.loads(
-            (second_root / "synthetic/holdout-v1/manifest.json").read_text(
-                encoding="utf-8"
-            )
-        ),
-        "cases": json.loads(
-            (second_root / "evaluation_cases/v1/manifest.json").read_text(
-                encoding="utf-8"
-            )
-        ),
+    baseline = json.loads(PHASE1_BASELINE.read_text(encoding="utf-8"))
+    assert manifests["development"]["dataset_id"] == baseline["dataset_ids"][
+        "development"
+    ]
+    assert manifests["holdout"]["dataset_id"] == baseline["dataset_ids"]["holdout"]
+    assert manifests["cases"]["case_set_id"] == baseline["case_set_id"]
+
+    expected_hashes = {
+        item["path"]: item["sha256"] for item in baseline["artifacts"]
     }
-
-    assert first["development"]["dataset_id"] == second["development"]["dataset_id"]
-    assert first["holdout"]["dataset_id"] == second["holdout"]["dataset_id"]
-    assert first["cases"]["case_set_id"] == second["cases"]["case_set_id"]
-    assert (
-        first["development"]["dataset_id"]
-        != first["holdout"]["dataset_id"]
+    actual_files = sorted(
+        path
+        for relative_directory in (
+            Path("synthetic/v1"),
+            Path("synthetic/holdout-v1"),
+            Path("evaluation_cases/v1"),
+        )
+        for path in (output_root / relative_directory).iterdir()
+        if path.is_file()
     )
-
-    artifact_directories = (
-        Path("synthetic/v1"),
-        Path("synthetic/holdout-v1"),
-        Path("evaluation_cases/v1"),
-    )
-    for relative_directory in artifact_directories:
-        first_files = sorted(
-            path.relative_to(first_root)
-            for path in (first_root / relative_directory).iterdir()
-            if path.is_file()
-        )
-        second_files = sorted(
-            path.relative_to(second_root)
-            for path in (second_root / relative_directory).iterdir()
-            if path.is_file()
-        )
-        frozen_files = sorted(
-            path.relative_to(ROOT / "data")
-            for path in (ROOT / "data" / relative_directory).iterdir()
-            if path.is_file()
-        )
-        assert first_files == second_files == frozen_files
-        for relative_file in first_files:
-            assert (first_root / relative_file).read_bytes() == (
-                second_root / relative_file
-            ).read_bytes()
-            assert (first_root / relative_file).read_bytes() == (
-                ROOT / "data" / relative_file
-            ).read_bytes()
+    actual_hashes = {
+        path.relative_to(output_root).as_posix(): file_sha256(path)
+        for path in actual_files
+    }
+    assert baseline["artifact_count"] == len(expected_hashes) == 16
+    assert actual_hashes == expected_hashes
