@@ -152,6 +152,35 @@ def test_existing_snapshot_with_same_identity_returns_without_rewriting(
     assert build_snapshot(small_config, output) == expected
 
 
+def test_existing_output_symlink_is_rejected_without_reusing_target_snapshot(
+    tmp_path: Path, small_config: Path
+) -> None:
+    target = tmp_path / "target"
+    expected = build_snapshot(small_config, target)
+    output = tmp_path / "v1"
+    output.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        build_snapshot(small_config, output)
+
+    assert json.loads((target / "manifest.json").read_text(encoding="utf-8")) == expected
+    assert output.is_symlink()
+
+
+def test_dangling_output_symlink_is_rejected_without_creating_target_snapshot(
+    tmp_path: Path, small_config: Path
+) -> None:
+    target = tmp_path / "missing-target"
+    output = tmp_path / "v1"
+    output.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        build_snapshot(small_config, output)
+
+    assert output.is_symlink()
+    assert not target.exists()
+
+
 def test_existing_snapshot_rejects_metadata_only_config_change_with_same_tables(
     tmp_path: Path, small_config: Path
 ) -> None:

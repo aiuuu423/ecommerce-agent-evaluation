@@ -552,11 +552,19 @@ def build_snapshot(
     if quality["status"] != "pass":
         raise ValueError(f"dataset quality failed: {quality['failed_checks']}")
 
-    output = (
+    raw_output = (
         Path(output_dir)
         if output_dir is not None
         else Path("data/synthetic") / config.dataset_version
-    ).resolve()
+    )
+    try:
+        raw_output.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if raw_output.is_symlink():
+            raise ValueError(f"snapshot output must not be a symbolic link: {raw_output}")
+    output = raw_output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     dataset_id = dataset_id_for_tables(tables)
     logical_tables = _logical_table_manifest(tables)
