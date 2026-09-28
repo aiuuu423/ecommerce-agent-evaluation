@@ -21,6 +21,7 @@ from app.data.manifest import (
     contained_path,
     dataset_id_for_tables,
     file_sha256,
+    json_sha256,
     logical_table_sha256,
     write_json,
 )
@@ -448,8 +449,7 @@ def _logical_table_manifest(
 
 def _load_existing_snapshot(
     output: Path,
-    expected_dataset_id: str,
-    expected_tables: dict[str, dict[str, object]],
+    expected_identity: dict[str, object],
 ) -> dict[str, object]:
     if output.is_symlink() or not output.is_dir():
         raise ValueError(f"snapshot output is not an immutable directory: {output}")
@@ -462,16 +462,43 @@ def _load_existing_snapshot(
         quality_metadata = manifest["data_quality_report"]
         quality_path = contained_path(output, quality_metadata["file"])
         expected_quality_sha = quality_metadata["sha256"]
+        existing_metadata = {
+            key: manifest[key]
+            for key in (
+                "dataset_id",
+                "config_sha256",
+                "dataset_version",
+                "schema_version",
+                "seed",
+                "source_label",
+                "writer",
+            )
+        }
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError(f"existing snapshot manifest is invalid: {output}") from exc
 
     if not isinstance(table_manifest, dict) or set(table_manifest) != set(TABLE_NAMES):
         raise ValueError(f"existing snapshot manifest is invalid: {output}")
-    if existing_dataset_id != expected_dataset_id:
+    expected_metadata = {
+        key: expected_identity[key]
+        for key in (
+            "dataset_id",
+            "config_sha256",
+            "dataset_version",
+            "schema_version",
+            "seed",
+            "source_label",
+            "writer",
+        )
+    }
+    if existing_metadata != expected_metadata:
         raise ValueError(
             "snapshot version directory is immutable and contains a different "
             f"dataset identity: {output}"
         )
+    expected_tables = expected_identity["tables"]
+    if not isinstance(expected_tables, dict):
+        raise TypeError("expected snapshot tables must be a mapping")
     for name in TABLE_NAMES:
         try:
             metadata = table_manifest[name]
@@ -500,6 +527,11 @@ def _load_existing_snapshot(
         raise ValueError(f"existing snapshot quality report is invalid: {output}") from exc
     if not isinstance(quality_report, dict) or quality_report.get("status") != "pass":
         raise ValueError(f"existing snapshot quality report status is not pass: {output}")
+    if quality_metadata != expected_identity["data_quality_report"]:
+        raise ValueError(
+            "snapshot version directory is immutable and contains a different "
+            f"dataset identity: {output}"
+        )
 
     existing_tables = {
         name: pd.read_parquet(contained_path(output, table_manifest[name]["file"]))
@@ -535,10 +567,25 @@ def build_snapshot(
         "compression": PARQUET_COMPRESSION,
         "index": False,
     }
+    quality_metadata = {
+        "file": "data_quality_report.json",
+        "sha256": json_sha256(quality),
+    }
+    expected_identity: dict[str, object] = {
+        "dataset_id": dataset_id,
+        "dataset_version": config.dataset_version,
+        "schema_version": config.schema_version,
+        "source_label": config.source_label,
+        "seed": config.seed,
+        "config_sha256": config_digest,
+        "writer": writer,
+        "tables": logical_tables,
+        "data_quality_report": quality_metadata,
+    }
 
     with _snapshot_lock(output):
         if output.exists() or output.is_symlink():
-            return _load_existing_snapshot(output, dataset_id, logical_tables)
+            return _load_existing_snapshot(output, expected_identity)
 
         staging = Path(
             tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
@@ -569,10 +616,7 @@ def build_snapshot(
                 "config_sha256": config_digest,
                 "writer": writer,
                 "tables": table_manifest,
-                "data_quality_report": {
-                    "file": "data_quality_report.json",
-                    "sha256": file_sha256(quality_path),
-                },
+                "data_quality_report": quality_metadata,
             }
             write_json(contained_path(staging, "manifest.json"), manifest)
             _publish_snapshot(staging, output)

@@ -98,8 +98,15 @@ def contained_path(output_dir: Path, relative_path: str | Path) -> Path:
     return target
 
 
+def json_sha256(payload: dict[str, Any]) -> str:
+    return sha256(_json_bytes(payload)).hexdigest()
+
+
+def _json_bytes(payload: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    path.write_bytes(_json_bytes(payload))

@@ -152,6 +152,66 @@ def test_existing_snapshot_with_same_identity_returns_without_rewriting(
     assert build_snapshot(small_config, output) == expected
 
 
+def test_existing_snapshot_rejects_metadata_only_config_change_with_same_tables(
+    tmp_path: Path, small_config: Path
+) -> None:
+    output = tmp_path / "v1"
+    build_snapshot(small_config, output)
+    metadata_only_config = tmp_path / "config-with-comment.yaml"
+    metadata_only_config.write_text(
+        small_config.read_text(encoding="utf-8") + "# metadata-only change\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="immutable"):
+        build_snapshot(metadata_only_config, output)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("dataset_version", "test-v2"),
+        ("schema_version", "2.0"),
+        ("source_label", "Other Source"),
+        ("seed", -1),
+        ("writer", {"parquet_engine": "other"}),
+    ],
+)
+def test_existing_snapshot_rejects_manifest_metadata_mismatch(
+    tmp_path: Path,
+    small_config: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    output = tmp_path / "v1"
+    build_snapshot(small_config, output)
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = replacement
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="immutable"):
+        build_snapshot(small_config, output)
+
+
+def test_existing_snapshot_rejects_unexpected_quality_report_identity(
+    tmp_path: Path, small_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "v1"
+    build_snapshot(small_config, output)
+    original_validate = generator.validate_dataset
+
+    def validate_with_changed_metadata(tables, config):
+        report = original_validate(tables, config)
+        report["validation_revision"] = "changed"
+        return report
+
+    monkeypatch.setattr(generator, "validate_dataset", validate_with_changed_metadata)
+
+    with pytest.raises(ValueError, match="immutable"):
+        build_snapshot(small_config, output)
+
+
 def test_existing_snapshot_rejects_tampered_quality_report_hash(
     tmp_path: Path, small_config: Path
 ) -> None:
