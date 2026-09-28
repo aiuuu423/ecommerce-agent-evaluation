@@ -106,6 +106,30 @@ class SyntheticDataConfig(BaseModel):
                 raise ValueError(
                     f"{anomaly.anomaly_id}: product_id is outside configured product range"
                 )
+
+        anomalies_by_target: dict[tuple[str, str], list[AnomalyConfig]] = {}
+        for anomaly in self.anomalies:
+            target = (anomaly.product_id, anomaly.kind)
+            anomalies_by_target.setdefault(target, []).append(anomaly)
+
+        for (product_id, kind), anomalies in anomalies_by_target.items():
+            ordered = sorted(
+                anomalies,
+                key=lambda anomaly: (
+                    anomaly.start_day,
+                    anomaly.end_day,
+                    anomaly.anomaly_id,
+                ),
+            )
+            for previous, current in zip(ordered, ordered[1:], strict=False):
+                if current.start_day <= previous.end_day:
+                    first_id, second_id = sorted(
+                        (previous.anomaly_id, current.anomaly_id)
+                    )
+                    raise ValueError(
+                        f"{first_id} and {second_id}: overlapping anomaly windows "
+                        f"for product {product_id} and kind {kind}"
+                    )
         return self
 
 

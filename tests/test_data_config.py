@@ -236,6 +236,62 @@ def test_rejects_ambiguous_anomaly_targets(
     assert str(error["ctx"]["error"]) == detail
 
 
+@pytest.mark.parametrize(
+    ("first_window", "second_window"),
+    [
+        ((0, 10), (0, 10)),
+        ((0, 10), (10, 20)),
+        ((5, 10), (0, 20)),
+        ((10, 20), (0, 10)),
+    ],
+)
+def test_rejects_overlapping_anomaly_windows_for_same_product_and_kind(
+    first_window: tuple[int, int], second_window: tuple[int, int]
+) -> None:
+    anomalies = [
+        anomaly_data(start_day=first_window[0], end_day=first_window[1]),
+        anomaly_data(
+            anomaly_id="A2",
+            start_day=second_window[0],
+            end_day=second_window[1],
+        ),
+    ]
+
+    with pytest.raises(ValidationError) as exc_info:
+        SyntheticDataConfig.model_validate(minimal_config(anomalies=anomalies))
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ()
+    assert error["type"] == "value_error"
+    assert str(error["ctx"]["error"]) == (
+        "A1 and A2: overlapping anomaly windows for product P001 "
+        "and kind traffic_drop"
+    )
+
+
+@pytest.mark.parametrize(
+    "second_anomaly",
+    [
+        anomaly_data(anomaly_id="A2", start_day=2, end_day=3),
+        anomaly_data(anomaly_id="A2", product_id="P002", start_day=0, end_day=1),
+        anomaly_data(
+            anomaly_id="A2",
+            kind="sales_drop",
+            start_day=0,
+            end_day=1,
+        ),
+    ],
+)
+def test_allows_non_conflicting_anomaly_windows(
+    second_anomaly: dict[str, object],
+) -> None:
+    config = SyntheticDataConfig.model_validate(
+        minimal_config(anomalies=[anomaly_data(), second_anomaly])
+    )
+
+    assert len(config.anomalies) == 2
+
+
 @pytest.mark.parametrize("multiplier", [float("nan"), float("inf"), float("-inf")])
 def test_anomaly_multiplier_must_be_finite(multiplier: float) -> None:
     with pytest.raises(ValidationError) as exc_info:
