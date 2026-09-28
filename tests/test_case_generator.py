@@ -7,8 +7,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.data.case_generator import build_cases, write_cases
+from app.data.case_generator import (
+    PRODUCT_LEVEL_GOLD_TASKS,
+    _distractor_product,
+    build_cases,
+    write_cases,
+)
 from app.data.generator import build_snapshot
+from app.data.gold import build_gold_bundle
 from app.data.schemas import (
     BusinessTask,
     Capability,
@@ -533,6 +539,22 @@ def test_builds_exact_balanced_traceable_case_set(tmp_path: Path) -> None:
         task: Counter({"development": 14, "holdout": 6})
         for task in BusinessTask
     }
+    family_splits: dict[tuple[BusinessTask, Capability], set[str]] = {}
+    for case in cases:
+        family = (case.business_task, case.primary_capability)
+        family_splits.setdefault(family, set()).add(case.split)
+    assert all(len(splits) == 1 for splits in family_splits.values())
+    assert {
+        task: Counter(
+            next(iter(splits))
+            for (family_task, _), splits in family_splits.items()
+            if family_task is task
+        )
+        for task in BusinessTask
+    } == {
+        task: Counter({"development": 7, "holdout": 3})
+        for task in BusinessTask
+    }
     assert all(case.dataset_id == manifest["dataset_id"] for case in cases)
     assert all(case.dataset_version == manifest["dataset_version"] for case in cases)
     assert all(
@@ -570,12 +592,79 @@ def test_cases_bind_stable_evidence_metrics_and_capability_semantics(
         {row.dimensions.get("product_id") for row in case.gold_evidence} == {"P005"}
         for case in insufficient
     )
-    assert all(
-        case.expected_tool_calls[0].name == "query_traffic"
-        and case.expected_tool_calls[0].parameters["product_ids"] == ["P005"]
-        and case.expected_tool_calls[0].parameters["include_missing"] is True
-        for case in insufficient
-    )
+    expected = {
+        BusinessTask.GMV_DIAGNOSIS: {
+            "metrics": {"gmv_change_rate", "aov_change_rate"},
+            "unanswerable": {"traffic_change_rate", "current_cvr", "cvr_change"},
+            "tools": ["query_sales", "calculate_metrics"],
+            "answer_fragment": "不能用不完整流量可靠计算当前CVR",
+        },
+        BusinessTask.PRODUCT_ANOMALY: {
+            "metrics": {"current_observed_days", "previous_observed_days"},
+            "unanswerable": {"traffic_change_rate", "current_cvr", "cvr_change"},
+            "tools": ["query_product", "query_traffic"],
+            "answer_fragment": "可确认数据缺失异常",
+        },
+        BusinessTask.CONVERSION_DECLINE: {
+            "metrics": {
+                "previous_cvr",
+                "current_observed_days",
+                "previous_observed_days",
+            },
+            "unanswerable": {"current_cvr", "cvr_change"},
+            "tools": ["query_traffic", "query_sales", "calculate_metrics"],
+            "answer_fragment": "不能判断P005的转化下降幅度或排名",
+        },
+        BusinessTask.PRODUCTS_TO_WATCH: {
+            "metrics": {
+                "gmv_change_rate",
+                "refund_rate",
+                "current_observed_days",
+                "previous_observed_days",
+            },
+            "unanswerable": {"current_cvr", "cvr_change"},
+            "tools": ["query_sales", "query_traffic", "calculate_metrics"],
+            "answer_fragment": "应以data_quality_review关注P005",
+        },
+        BusinessTask.NEXT_WEEK_PRIORITY: {
+            "metrics": {
+                "evidence_value",
+                "current_observed_days",
+                "previous_observed_days",
+            },
+            "unanswerable": {"current_cvr", "cvr_change"},
+            "tools": ["query_traffic"],
+            "answer_fragment": "下周应优先repair_data_quality",
+        },
+    }
+    for case in insufficient:
+        spec = expected[case.business_task]
+        assert set(case.gold_metrics) == spec["metrics"]
+        assert set(case.metadata["answerable_metrics"]) == spec["metrics"]
+        assert set(case.metadata["unanswerable_metrics"]) == spec["unanswerable"]
+        assert [call.name for call in case.expected_tool_calls] == spec["tools"]
+        assert spec["answer_fragment"] in case.reference_answer
+        for call in case.expected_tool_calls:
+            if "product_ids" in call.parameters:
+                assert call.parameters["product_ids"] == ["P005"]
+
+
+def test_paraphrase_variants_cannot_leak_across_splits(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "v1"
+    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+    cases = build_cases(dataset_dir)
+
+    families: dict[tuple[BusinessTask, Capability], list[EvaluationCase]] = {}
+    for case in cases:
+        families.setdefault(
+            (case.business_task, case.primary_capability),
+            [],
+        ).append(case)
+
+    assert len(families) == 50
+    for family_cases in families.values():
+        assert {case.metadata["variant"] for case in family_cases} == {1, 2}
+        assert len({case.split for case in family_cases}) == 1
 
 
 def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
@@ -620,6 +709,12 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
     products = set(
         __import__("pandas").read_parquet(dataset_dir / "products.parquet")["product_id"]
     )
+    gold = build_gold_bundle(dataset_dir)
+    product_gold_union = {
+        row["product_id"]
+        for task in PRODUCT_LEVEL_GOLD_TASKS
+        for row in gold["tasks"][task]["evidence"]
+    }
     adversarial = [
         case
         for case in cases
@@ -629,11 +724,88 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
     for case in adversarial:
         distractor = case.metadata["distractor_product_id"]
         assert distractor in products
+        assert distractor not in product_gold_union
         assert distractor in case.user_input
-        assert distractor not in {
-            row.dimensions.get("product_id") for row in case.gold_evidence
-        }
+        assert case.metadata["distractor_assertion_supported"] is False
+        assert f"{distractor}是唯一主因的断言为假" in case.reference_answer
         assert "P999" not in case.user_input
+
+
+def test_distractor_selection_changes_when_its_false_assertion_becomes_gold(
+    tmp_path: Path,
+) -> None:
+    dataset_dir = tmp_path / "v1"
+    manifest = build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+    gold = build_gold_bundle(dataset_dir)
+    products = set(
+        __import__("pandas").read_parquet(dataset_dir / "products.parquet")["product_id"]
+    )
+    task = BusinessTask.PRODUCT_ANOMALY
+    first = _distractor_product(gold, products, manifest["dataset_id"], task)
+
+    counterfactual_gold = deepcopy(gold)
+    counterfactual_gold["tasks"][BusinessTask.PRODUCT_ANOMALY]["evidence"].append(
+        {"product_id": first}
+    )
+    second = _distractor_product(
+        counterfactual_gold,
+        products,
+        manifest["dataset_id"],
+        task,
+    )
+
+    assert second != first
+    assert second in products
+    assert all(
+        second
+        not in {
+            row.get("product_id")
+            for row in counterfactual_gold["tasks"][gold_task]["evidence"]
+        }
+        for gold_task in PRODUCT_LEVEL_GOLD_TASKS
+    )
+
+
+def test_every_gold_metric_is_reachable_from_expected_tool_path(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "v1"
+    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+    cases = build_cases(dataset_dir)
+    sales_metrics = {
+        "current_gmv",
+        "previous_gmv",
+        "current_orders",
+        "previous_orders",
+        "current_aov",
+        "previous_aov",
+        "gmv_change_rate",
+        "aov_change_rate",
+        "current_refund_rate",
+        "refund_rate",
+    }
+    traffic_metrics = {
+        "current_visits",
+        "previous_visits",
+        "traffic_change_rate",
+        "current_observed_days",
+        "previous_observed_days",
+    }
+    derived_metrics = {"current_cvr", "previous_cvr", "cvr_change"}
+
+    for case in cases:
+        tools = {call.name for call in case.expected_tool_calls}
+        metrics = set(case.gold_metrics)
+        assert not metrics & sales_metrics or "query_sales" in tools
+        assert not metrics & traffic_metrics or "query_traffic" in tools
+        if metrics & derived_metrics:
+            assert {"query_sales", "query_traffic", "calculate_metrics"} <= tools
+        if "evidence_value" in metrics:
+            evidence_metric = case.gold_evidence[0].dimensions["evidence_metric"]
+            required_tool = (
+                "query_traffic"
+                if evidence_metric in {"observed_days", "traffic_change_rate"}
+                else "query_sales"
+            )
+            assert required_tool in tools
 
 
 def test_jsonl_and_manifest_are_reproducible_and_do_not_leak_config(

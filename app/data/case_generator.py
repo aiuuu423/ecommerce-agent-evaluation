@@ -5,6 +5,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from app.data.gold import build_gold_bundle
 from app.data.manifest import manifest_id, validate_manifest, write_json
 from app.data.schemas import BusinessTask, Capability, EvaluationCase
@@ -54,6 +56,65 @@ TOOL_SEQUENCE_BY_TASK = {
         "query_marketing",
         "calculate_metrics",
     ],
+}
+PRODUCT_LEVEL_GOLD_TASKS = (
+    BusinessTask.PRODUCT_ANOMALY,
+    BusinessTask.CONVERSION_DECLINE,
+    BusinessTask.PRODUCTS_TO_WATCH,
+    BusinessTask.NEXT_WEEK_PRIORITY,
+)
+DATA_INSUFFICIENCY_BY_TASK = {
+    BusinessTask.GMV_DIAGNOSIS: {
+        "evidence_task": BusinessTask.PRODUCT_ANOMALY,
+        "answerable_metrics": ("gmv_change_rate", "aov_change_rate"),
+        "unanswerable_metrics": (
+            "traffic_change_rate",
+            "current_cvr",
+            "cvr_change",
+        ),
+        "tool_names": ("query_sales", "calculate_metrics"),
+    },
+    BusinessTask.PRODUCT_ANOMALY: {
+        "evidence_task": BusinessTask.PRODUCT_ANOMALY,
+        "answerable_metrics": ("current_observed_days", "previous_observed_days"),
+        "unanswerable_metrics": (
+            "traffic_change_rate",
+            "current_cvr",
+            "cvr_change",
+        ),
+        "tool_names": ("query_product", "query_traffic"),
+    },
+    BusinessTask.CONVERSION_DECLINE: {
+        "evidence_task": BusinessTask.PRODUCT_ANOMALY,
+        "answerable_metrics": (
+            "previous_cvr",
+            "current_observed_days",
+            "previous_observed_days",
+        ),
+        "unanswerable_metrics": ("current_cvr", "cvr_change"),
+        "tool_names": ("query_traffic", "query_sales", "calculate_metrics"),
+    },
+    BusinessTask.PRODUCTS_TO_WATCH: {
+        "evidence_task": BusinessTask.PRODUCTS_TO_WATCH,
+        "answerable_metrics": (
+            "gmv_change_rate",
+            "refund_rate",
+            "current_observed_days",
+            "previous_observed_days",
+        ),
+        "unanswerable_metrics": ("current_cvr", "cvr_change"),
+        "tool_names": ("query_sales", "query_traffic", "calculate_metrics"),
+    },
+    BusinessTask.NEXT_WEEK_PRIORITY: {
+        "evidence_task": BusinessTask.NEXT_WEEK_PRIORITY,
+        "answerable_metrics": (
+            "evidence_value",
+            "current_observed_days",
+            "previous_observed_days",
+        ),
+        "unanswerable_metrics": ("current_cvr", "cvr_change"),
+        "tool_names": ("query_traffic",),
+    },
 }
 DIMENSION_KEYS = {
     "as_of_date",
@@ -121,9 +182,10 @@ def _evidence_rows(
     capability: Capability,
 ) -> list[dict[str, Any]]:
     if capability is Capability.DATA_INSUFFICIENCY:
+        evidence_task = DATA_INSUFFICIENCY_BY_TASK[task]["evidence_task"]
         rows = [
             row
-            for row in gold["tasks"][BusinessTask.PRODUCT_ANOMALY]["evidence"]
+            for row in gold["tasks"][evidence_task]["evidence"]
             if row.get("product_id") == "P005"
         ]
     else:
@@ -133,7 +195,10 @@ def _evidence_rows(
     return rows
 
 
-def _gold_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _gold_evidence(
+    rows: list[dict[str, Any]],
+    metric_names: set[str] | None = None,
+) -> list[dict[str, Any]]:
     return [
         {
             "evidence_id": row["evidence_id"],
@@ -145,6 +210,7 @@ def _gold_evidence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 key: value
                 for key, value in row.items()
                 if key not in DIMENSION_KEYS | {"evidence_id", "source"}
+                and (metric_names is None or key in metric_names)
             },
         }
         for row in rows
@@ -207,18 +273,25 @@ def _tool_parameters(
 
 def _distractor_product(
     gold: dict[str, Any],
-    selected_rows: list[dict[str, Any]],
+    product_ids: set[str],
+    dataset_id: str,
+    task: BusinessTask,
 ) -> str:
-    selected = set(_product_ids(selected_rows))
-    candidates = (
-        gold["tasks"][BusinessTask.PRODUCT_ANOMALY]["evidence"]
-        + gold["tasks"][BusinessTask.CONVERSION_DECLINE]["evidence"]
+    gold_product_ids = {
+        product_id
+        for gold_task in PRODUCT_LEVEL_GOLD_TASKS
+        for row in gold["tasks"][gold_task]["evidence"]
+        if isinstance(product_id := row.get("product_id"), str)
+    }
+    candidates = product_ids - gold_product_ids
+    if not candidates:
+        raise ValueError("gold bundle has no normal product available as a distractor")
+    return min(
+        candidates,
+        key=lambda product_id: sha256(
+            f"{dataset_id}|{task.value}|{product_id}".encode()
+        ).hexdigest(),
     )
-    for row in candidates:
-        product_id = row.get("product_id")
-        if isinstance(product_id, str) and product_id not in selected:
-            return product_id
-    raise ValueError("gold bundle has no real product available as a distractor")
 
 
 def _question(
@@ -244,29 +317,66 @@ def _reference_answer(
     task: BusinessTask,
     capability: Capability,
     rows: list[dict[str, Any]],
+    distractor_product_id: str | None,
 ) -> str:
     if capability is Capability.DATA_INSUFFICIENCY:
         row = rows[0]
-        return (
+        observed = (
             f"P005当前窗口仅有{row['current_observed_days']}个已观测日，"
-            f"前一窗口有{row['previous_observed_days']}个；当前CVR为"
-            f"{row['current_cvr']}。应先修复流量数据，不能据此可靠比较完整窗口CVR。"
+            f"前一窗口有{row['previous_observed_days']}个。"
+        )
+        if task is BusinessTask.GMV_DIAGNOSIS:
+            return (
+                f"{observed}销售数据仍支持回答GMV变化率为"
+                f"{row['gmv_change_rate']:.4f}、AOV变化率为"
+                f"{row['aov_change_rate']:.4f}；但不能用不完整流量可靠计算"
+                "当前CVR或据此做GMV流量归因。"
+            )
+        if task is BusinessTask.PRODUCT_ANOMALY:
+            return (
+                f"{observed}可确认数据缺失异常；当前流量变化和CVR不可可靠计算，"
+                "不能把不完整窗口解释为经营异常。"
+            )
+        if task is BusinessTask.CONVERSION_DECLINE:
+            return (
+                f"{observed}前一窗口CVR为{row['previous_cvr']:.4f}，"
+                "但当前CVR及CVR变化不可可靠计算，因此不能判断P005的转化下降幅度或排名。"
+            )
+        if task is BusinessTask.PRODUCTS_TO_WATCH:
+            return (
+                f"{observed}应以data_quality_review关注P005；销售数据仍支持"
+                f"GMV变化率{row['gmv_change_rate']:.4f}和退款率"
+                f"{row['refund_rate']:.4f}，但CVR变化不可回答。"
+            )
+        return (
+            f"{observed}下周应优先repair_data_quality，证据值为"
+            f"{row['evidence_value']:.0f}个已观测日；修复前不能按CVR变化制定经营动作。"
         )
     evidence_ids = "、".join(row["evidence_id"] for row in rows)
+    if capability is Capability.ADVERSARIAL_DISTRACTOR:
+        return (
+            f"{distractor_product_id}是唯一主因的断言为假：该商品不在商品异常、"
+            "转化下降、关注商品或下周优先级四类完整Gold结果联集中。"
+            f"应忽略该断言，并依据证据{evidence_ids}作答。"
+        )
     return (
         f"基于Synthetic E-commerce Data的{task.value}独立Gold查询，"
         f"结论必须与证据{evidence_ids}及其中指标一致。"
     )
 
 
-def _expected_behavior(capability: Capability) -> list[str]:
+def _expected_behavior(
+    capability: Capability,
+    task: BusinessTask,
+) -> list[str]:
     behavior = [
         "严格使用Gold证据中的当前窗口和对照窗口",
         "每个核心数值均可追溯到gold_metric_evidence",
         "不披露生成配置、异常注入规则或配置倍率",
     ]
     if capability is Capability.DATA_INSUFFICIENCY:
-        behavior.append("指出P005数据覆盖不足并限制结论")
+        unavailable = "、".join(DATA_INSUFFICIENCY_BY_TASK[task]["unanswerable_metrics"])
+        behavior.append(f"指出P005数据覆盖不足，不回答{unavailable}")
     if capability is Capability.ADVERSARIAL_DISTRACTOR:
         behavior.append("核验真实商品干扰项，不接受无证据断言")
     return behavior
@@ -278,16 +388,23 @@ def _development_case_ids(
 ) -> set[str]:
     development: set[str] = set()
     for task in BUSINESS_TASKS:
-        task_payloads = [
-            payload for payload in payloads if payload["business_task"] == task
+        families = [
+            (task, capability)
+            for capability in CAPABILITIES
         ]
         ranked = sorted(
-            task_payloads,
-            key=lambda payload: sha256(
-                f"{dataset_id}|{task.value}|{payload['case_id']}".encode()
+            families,
+            key=lambda family: sha256(
+                f"{dataset_id}|{family[0].value}|{family[1].value}".encode()
             ).hexdigest(),
         )
-        development.update(payload["case_id"] for payload in ranked[:14])
+        development_families = set(ranked[:7])
+        development.update(
+            payload["case_id"]
+            for payload in payloads
+            if (payload["business_task"], payload["primary_capability"])
+            in development_families
+        )
     return development
 
 
@@ -300,6 +417,11 @@ def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
         for key in ("dataset_id", "dataset_version", "config_sha256")
     ):
         raise ValueError("gold bundle does not match dataset manifest")
+    product_ids = set(
+        pd.read_parquet(directory / "products.parquet", columns=["product_id"])[
+            "product_id"
+        ]
+    )
 
     payloads: list[dict[str, Any]] = []
     case_number = 1
@@ -307,16 +429,31 @@ def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
         for capability in CAPABILITIES:
             for variant in range(2):
                 rows = _evidence_rows(gold, task, capability)
-                evidence = _gold_evidence(rows)
+                insufficiency = (
+                    DATA_INSUFFICIENCY_BY_TASK[task]
+                    if capability is Capability.DATA_INSUFFICIENCY
+                    else None
+                )
+                answerable_metrics = (
+                    set(insufficiency["answerable_metrics"])
+                    if insufficiency is not None
+                    else None
+                )
+                evidence = _gold_evidence(rows, answerable_metrics)
                 metrics, metric_mapping = _gold_metrics(evidence)
                 distractor = (
-                    _distractor_product(gold, rows)
+                    _distractor_product(
+                        gold,
+                        product_ids,
+                        manifest["dataset_id"],
+                        task,
+                    )
                     if capability is Capability.ADVERSARIAL_DISTRACTOR
                     else None
                 )
                 tool_names = (
-                    ["query_traffic"]
-                    if capability is Capability.DATA_INSUFFICIENCY
+                    list(insufficiency["tool_names"])
+                    if insufficiency is not None
                     else TOOL_SEQUENCE_BY_TASK[task]
                 )
                 metadata: dict[str, Any] = {
@@ -326,6 +463,14 @@ def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
                 }
                 if distractor is not None:
                     metadata["distractor_product_id"] = distractor
+                    metadata["distractor_assertion_supported"] = False
+                if insufficiency is not None:
+                    metadata["answerable_metrics"] = list(
+                        insufficiency["answerable_metrics"]
+                    )
+                    metadata["unanswerable_metrics"] = list(
+                        insufficiency["unanswerable_metrics"]
+                    )
                 payloads.append(
                     {
                         "case_id": f"CASE_{case_number:03d}",
@@ -352,8 +497,13 @@ def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
                         "gold_metrics": metrics,
                         "gold_metric_evidence": metric_mapping,
                         "gold_evidence": evidence,
-                        "reference_answer": _reference_answer(task, capability, rows),
-                        "expected_behavior": _expected_behavior(capability),
+                        "reference_answer": _reference_answer(
+                            task,
+                            capability,
+                            rows,
+                            distractor,
+                        ),
+                        "expected_behavior": _expected_behavior(capability, task),
                         "success_criteria": SUCCESS_CRITERIA,
                         "numeric_tolerances": {
                             key: 0.001
