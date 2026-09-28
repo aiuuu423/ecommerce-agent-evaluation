@@ -1,15 +1,19 @@
 import json
 from collections import Counter
 from copy import deepcopy
+from difflib import SequenceMatcher
+from hashlib import sha256
 from math import inf, nan
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from app.data.case_generator import (
     PRODUCT_LEVEL_GOLD_TASKS,
     _distractor_product,
+    _question_stem,
     build_cases,
     write_cases,
 )
@@ -682,6 +686,31 @@ def test_paraphrase_variants_cannot_leak_across_splits(tmp_path: Path) -> None:
     for family_cases in families.values():
         assert {case.metadata["variant"] for case in family_cases} == {1, 2}
         assert len({case.split for case in family_cases}) == 1
+        assert len({case.metadata["semantic_family_id"] for case in family_cases}) == 1
+
+    semantic_family_splits: dict[str, set[str]] = {}
+    stems_by_split: dict[str, set[str]] = {"development": set(), "holdout": set()}
+    for case in cases:
+        semantic_family_splits.setdefault(
+            str(case.metadata["semantic_family_id"]), set()
+        ).add(case.split)
+        stem = _question_stem(
+            case.business_task,
+            case.split,
+            int(case.metadata["variant"]) - 1,
+            case.primary_capability is not Capability.DATA_INSUFFICIENCY,
+        )
+        assert case.user_input.startswith(stem)
+        stems_by_split[case.split].add(stem)
+
+    assert len(semantic_family_splits) == 50
+    assert all(len(splits) == 1 for splits in semantic_family_splits.values())
+    cross_split_similarity = [
+        SequenceMatcher(None, development, holdout).ratio()
+        for development in stems_by_split["development"]
+        for holdout in stems_by_split["holdout"]
+    ]
+    assert max(cross_split_similarity) < 0.72
 
 
 def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
@@ -689,33 +718,12 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
 ) -> None:
     cases, _, _ = build_test_case_set(tmp_path)
 
+    contract = yaml.safe_load(
+        Path("configs/evaluation/tool_contract_v1.yaml").read_text(encoding="utf-8")
+    )
     required_parameters = {
-        "query_product": {"product_ids"},
-        "query_sales": {
-            "start_date",
-            "end_date",
-            "comparison_start_date",
-            "comparison_end_date",
-            "product_ids",
-            "include_refunds",
-        },
-        "query_traffic": {
-            "start_date",
-            "end_date",
-            "comparison_start_date",
-            "comparison_end_date",
-            "product_ids",
-            "include_missing",
-        },
-        "query_marketing": {
-            "start_date",
-            "end_date",
-            "comparison_start_date",
-            "comparison_end_date",
-            "product_ids",
-            "campaign_ids",
-        },
-        "calculate_metrics": {"metrics", "group_by"},
+        name: set(spec["required_parameters"])
+        for name, spec in contract["tools"].items()
     }
     for case in cases:
         for call in case.expected_tool_calls:
@@ -787,26 +795,44 @@ def test_versioned_tool_contract_fixes_gmv_next_week_and_adversarial_paths(
     tmp_path: Path,
 ) -> None:
     cases, _, _ = build_test_case_set(tmp_path)
+    contract = yaml.safe_load(
+        Path("configs/evaluation/tool_contract_v1.yaml").read_text(encoding="utf-8")
+    )
 
     for case in cases:
         path = [call.name for call in case.expected_tool_calls]
         assert case.tool_contract_version == "1.0"
         assert len(case.tool_contract_sha256) == 64
-        if case.primary_capability is Capability.DATA_INSUFFICIENCY:
-            continue
-        if case.business_task is BusinessTask.GMV_DIAGNOSIS:
-            expected = ["query_sales", "calculate_metrics"]
-        elif case.business_task is BusinessTask.NEXT_WEEK_PRIORITY:
-            expected = ["query_sales", "query_traffic", "calculate_metrics"]
-        else:
-            expected = None
-        if case.primary_capability is Capability.ADVERSARIAL_DISTRACTOR:
-            assert path[0] == "query_product"
-            assert len(path) == len(set(path))
-            if expected is not None:
-                expected = list(dict.fromkeys(["query_product", *expected]))
-        if expected is not None:
-            assert path == expected
+        expected = list(contract["paths"][case.business_task.value])
+        override = contract["capability_overrides"].get(
+            case.primary_capability.value, {}
+        )
+        expected = list(override.get("paths", {}).get(case.business_task.value, expected))
+        expected = list(dict.fromkeys([*override.get("prepend_tools", []), *expected]))
+        assert path == expected
+
+
+def test_generator_rejects_parameters_that_diverge_from_the_yaml_contract(
+    tmp_path: Path,
+) -> None:
+    contract_path = Path("configs/evaluation/tool_contract_v1.yaml")
+    contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+    contract["tools"]["query_sales"]["required_parameters"].remove("include_refunds")
+    changed_contract = tmp_path / "tool_contract.yaml"
+    changed_contract.write_text(
+        yaml.safe_dump(contract, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    development_dir = tmp_path / "development-v1"
+    holdout_dir = tmp_path / "holdout-v1"
+    build_snapshot("configs/data/synthetic_v1.yaml", development_dir)
+    build_snapshot("configs/data/synthetic_holdout_v1.yaml", holdout_dir)
+
+    with pytest.raises(
+        ValueError,
+        match=r"query_sales parameters do not match tool contract.*include_refunds",
+    ):
+        build_cases(development_dir, holdout_dir, changed_contract)
 
 
 def test_difficulty_is_ranked_by_recorded_complexity_with_frozen_distribution(
@@ -948,6 +974,33 @@ def test_jsonl_and_manifest_are_reproducible_and_do_not_leak_config(
         "A07",
     ):
         assert forbidden not in serialized
+
+
+def test_committed_case_snapshot_is_frozen_from_both_configs(tmp_path: Path) -> None:
+    cases, _, _ = build_test_case_set(tmp_path)
+    rebuilt_path = tmp_path / "rebuilt"
+    rebuilt_manifest = write_cases(cases, rebuilt_path)
+    committed_path = Path("data/evaluation_cases/v1")
+
+    assert (rebuilt_path / "cases.jsonl").read_bytes() == (
+        committed_path / "cases.jsonl"
+    ).read_bytes()
+    assert (rebuilt_path / "manifest.json").read_bytes() == (
+        committed_path / "manifest.json"
+    ).read_bytes()
+    assert rebuilt_manifest["case_set_id"] == "6683c9b3a25c5776"
+    assert (
+        rebuilt_manifest["jsonl_sha256"]
+        == "03dffa499a8d4cd0415da070cfdb9e439e401229e9a7d67a0e2be9f56b8c8a62"
+    )
+
+    split_difficulty_mapping = "\n".join(
+        f"{case.case_id}:{case.split}:{case.difficulty}" for case in cases
+    ).encode()
+    assert (
+        sha256(split_difficulty_mapping).hexdigest()
+        == "9a2f50c32676a09dff480f65044f8ce69b04426661ed20e92aa637534ee1c51f"
+    )
 
 
 def test_case_snapshot_is_an_atomic_immutable_directory(tmp_path: Path) -> None:

@@ -26,4 +26,13 @@ paths:
   conversion_decline: [query_traffic, query_sales, calculate_metrics]
   products_to_watch: [query_sales, query_traffic, calculate_metrics]
   next_week_priority: [query_sales, query_traffic, calculate_metrics]
-adversarial_prefix: [query_product]
+capability_overrides:
+  data_insufficiency:
+    paths:
+      gmv_diagnosis: [query_sales, calculate_metrics]
+      product_anomaly: [query_product, query_traffic]
+      conversion_decline: [query_traffic, query_sales, calculate_metrics]
+      products_to_watch: [query_sales, query_traffic, calculate_metrics]
+      next_week_priority: [query_traffic]
+  adversarial_distractor:
+    prepend_tools: [query_product]

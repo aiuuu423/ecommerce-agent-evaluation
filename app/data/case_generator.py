@@ -66,7 +66,6 @@ DATA_INSUFFICIENCY_BY_TASK = {
             "current_cvr",
             "cvr_change",
         ),
-        "tool_names": ("query_sales", "calculate_metrics"),
     },
     BusinessTask.PRODUCT_ANOMALY: {
         "evidence_task": BusinessTask.PRODUCT_ANOMALY,
@@ -76,7 +75,6 @@ DATA_INSUFFICIENCY_BY_TASK = {
             "current_cvr",
             "cvr_change",
         ),
-        "tool_names": ("query_product", "query_traffic"),
     },
     BusinessTask.CONVERSION_DECLINE: {
         "evidence_task": BusinessTask.PRODUCT_ANOMALY,
@@ -86,7 +84,6 @@ DATA_INSUFFICIENCY_BY_TASK = {
             "previous_observed_days",
         ),
         "unanswerable_metrics": ("current_cvr", "cvr_change"),
-        "tool_names": ("query_traffic", "query_sales", "calculate_metrics"),
     },
     BusinessTask.PRODUCTS_TO_WATCH: {
         "evidence_task": BusinessTask.PRODUCTS_TO_WATCH,
@@ -97,7 +94,6 @@ DATA_INSUFFICIENCY_BY_TASK = {
             "previous_observed_days",
         ),
         "unanswerable_metrics": ("current_cvr", "cvr_change"),
-        "tool_names": ("query_sales", "query_traffic", "calculate_metrics"),
     },
     BusinessTask.NEXT_WEEK_PRIORITY: {
         "evidence_task": BusinessTask.NEXT_WEEK_PRIORITY,
@@ -107,7 +103,6 @@ DATA_INSUFFICIENCY_BY_TASK = {
             "previous_observed_days",
         ),
         "unanswerable_metrics": ("current_cvr", "cvr_change"),
-        "tool_names": ("query_traffic",),
     },
 }
 DIMENSION_KEYS = {
@@ -122,27 +117,51 @@ DIMENSION_KEYS = {
     "priority_reason",
     "evidence_metric",
 }
-QUESTION_STEMS = {
-    BusinessTask.GMV_DIAGNOSIS: (
-        "分析最近30天GMV相较前30天的变化，并指出可由数据支持的原因。",
-        "复盘当前30天与此前30天的GMV表现，给出有证据的诊断。",
-    ),
-    BusinessTask.PRODUCT_ANOMALY: (
-        "识别最近30天的异常商品，并说明异常类型和量化证据。",
-        "检查当前窗口的商品异常，列出结论所依据的经营指标。",
-    ),
-    BusinessTask.CONVERSION_DECLINE: (
-        "找出最近30天转化率下降最明显的商品，并与前30天比较。",
-        "比较两个连续30天窗口，定位CVR下降商品并报告变化。",
-    ),
-    BusinessTask.PRODUCTS_TO_WATCH: (
-        "根据最近经营数据列出需要持续关注的商品及原因。",
-        "从当前与前一窗口的表现中筛出关注商品，并提供证据。",
-    ),
-    BusinessTask.NEXT_WEEK_PRIORITY: (
-        "根据最近经营数据给出下周商品运营优先级，逐项绑定证据。",
-        "制定下周关注顺序，说明每项优先事项的数据依据。",
-    ),
+QUESTION_STEMS_BY_SPLIT = {
+    "development": {
+        BusinessTask.GMV_DIAGNOSIS: (
+            "分析最近30天GMV相较前30天的变化，并指出可由数据支持的原因。",
+            "复盘当前30天与此前30天的GMV表现，给出有证据的诊断。",
+        ),
+        BusinessTask.PRODUCT_ANOMALY: (
+            "识别最近30天的异常商品，并说明异常类型和量化证据。",
+            "检查当前窗口的商品异常，列出结论所依据的经营指标。",
+        ),
+        BusinessTask.CONVERSION_DECLINE: (
+            "找出最近30天转化率下降最明显的商品，并与前30天比较。",
+            "比较两个连续30天窗口，定位CVR下降商品并报告变化。",
+        ),
+        BusinessTask.PRODUCTS_TO_WATCH: (
+            "根据最近经营数据列出需要持续关注的商品及原因。",
+            "从当前与前一窗口的表现中筛出关注商品，并提供证据。",
+        ),
+        BusinessTask.NEXT_WEEK_PRIORITY: (
+            "根据最近经营数据给出下周商品运营优先级，逐项绑定证据。",
+            "制定下周关注顺序，说明每项优先事项的数据依据。",
+        ),
+    },
+    "holdout": {
+        BusinessTask.GMV_DIAGNOSIS: (
+            "经营例会需要判断本期销售额走向，请用相邻周期数据形成归因结论。",
+            "请从成交表现出发评估本期营收增减，并标明结论的事实基础。",
+        ),
+        BusinessTask.PRODUCT_ANOMALY: (
+            "请排查商品层面的异常信号，标注问题类别并附上可核验数值。",
+            "哪些商品出现值得处置的经营偏离？请按证据说明判断。",
+        ),
+        BusinessTask.CONVERSION_DECLINE: (
+            "请定位购买效率恶化最显著的商品，并用相邻周期结果佐证。",
+            "从访购漏斗中筛查退步商品，报告其前后表现差异。",
+        ),
+        BusinessTask.PRODUCTS_TO_WATCH: (
+            "请建立商品观察清单，依据近期风险信号解释入选理由。",
+            "哪些商品应进入后续监控？请结合跨周期证据作答。",
+        ),
+        BusinessTask.NEXT_WEEK_PRIORITY: (
+            "请安排下一周期的商品运营处置顺序，每项决策都要有数据支撑。",
+            "面向下周制定商品行动队列，并解释各项排序依据。",
+        ),
+    },
 }
 CAPABILITY_INSTRUCTIONS = {
     Capability.BASIC_QUERY: "直接回答，引用关键数据。",
@@ -179,14 +198,41 @@ def _load_tool_contract(path: Path | str) -> tuple[dict[str, Any], str]:
         or not isinstance(payload.get("contract_version"), str)
         or not isinstance(payload.get("tools"), dict)
         or not isinstance(payload.get("paths"), dict)
-        or not isinstance(payload.get("adversarial_prefix"), list)
+        or not isinstance(payload.get("capability_overrides"), dict)
     ):
         raise ValueError("tool contract is invalid")
     expected_tasks = {task.value for task in BUSINESS_TASKS}
     if set(payload["paths"]) != expected_tasks:
         raise ValueError("tool contract must define every business task")
     known_tools = set(payload["tools"])
-    for path in [*payload["paths"].values(), payload["adversarial_prefix"]]:
+    for tool_name, tool_spec in payload["tools"].items():
+        required = tool_spec.get("required_parameters") if isinstance(tool_spec, dict) else None
+        if (
+            not isinstance(tool_name, str)
+            or not isinstance(required, list)
+            or not required
+            or not all(isinstance(parameter, str) and parameter for parameter in required)
+            or len(required) != len(set(required))
+        ):
+            raise ValueError("tool contract contains invalid required parameters")
+
+    paths = list(payload["paths"].values())
+    known_capabilities = {capability.value for capability in CAPABILITIES}
+    for capability, override in payload["capability_overrides"].items():
+        if capability not in known_capabilities or not isinstance(override, dict):
+            raise ValueError("tool contract contains an invalid capability override")
+        if set(override) - {"paths", "prepend_tools"}:
+            raise ValueError("tool contract contains an invalid capability override")
+        override_paths = override.get("paths", {})
+        prepend_tools = override.get("prepend_tools", [])
+        if not isinstance(override_paths, dict) or set(override_paths) - expected_tasks:
+            raise ValueError("tool contract contains an invalid capability override path")
+        if not isinstance(prepend_tools, list):
+            raise ValueError("tool contract contains an invalid capability override")
+        paths.extend(override_paths.values())
+        if "prepend_tools" in override:
+            paths.append(prepend_tools)
+    for path in paths:
         if not isinstance(path, list) or not path or not all(
             isinstance(name, str) and name in known_tools for name in path
         ):
@@ -332,15 +378,31 @@ def _distractor_product(
     )
 
 
+def _question_stem(
+    task: BusinessTask,
+    split: str,
+    variant: int,
+    include_top_k: bool,
+) -> str:
+    stem = QUESTION_STEMS_BY_SPLIT[split][task][variant]
+    if task in LIST_TASKS and include_top_k:
+        stem = f"{stem}请按Gold排序口径返回Top-{LIST_TOP_K}，不得省略名次。"
+    return stem
+
+
 def _question(
     task: BusinessTask,
     capability: Capability,
+    split: str,
     variant: int,
     distractor_product_id: str | None,
 ) -> str:
-    stem = QUESTION_STEMS[task][variant]
-    if task in LIST_TASKS and capability is not Capability.DATA_INSUFFICIENCY:
-        stem = f"{stem}请按Gold排序口径返回Top-{LIST_TOP_K}，不得省略名次。"
+    stem = _question_stem(
+        task,
+        split,
+        variant,
+        capability is not Capability.DATA_INSUFFICIENCY,
+    )
     if capability is Capability.ADVERSARIAL_DISTRACTOR:
         if distractor_product_id is None:
             raise ValueError("adversarial case requires a distractor product")
@@ -441,12 +503,37 @@ def _tool_names(
     capability: Capability,
     contract: dict[str, Any],
 ) -> list[str]:
-    if capability is Capability.DATA_INSUFFICIENCY:
-        return list(DATA_INSUFFICIENCY_BY_TASK[task]["tool_names"])
     names = list(contract["paths"][task.value])
-    if capability is Capability.ADVERSARIAL_DISTRACTOR:
-        names = list(dict.fromkeys([*contract["adversarial_prefix"], *names]))
+    override = contract["capability_overrides"].get(capability.value, {})
+    if task.value in override.get("paths", {}):
+        names = list(override["paths"][task.value])
+    names = list(dict.fromkeys([*override.get("prepend_tools", []), *names]))
     return names
+
+
+def _tool_call(
+    tool_name: str,
+    rows: list[dict[str, Any]],
+    metric_names: list[str],
+    contract: dict[str, Any],
+    distractor_product_id: str | None,
+) -> dict[str, Any]:
+    parameters = _tool_parameters(
+        tool_name,
+        rows,
+        metric_names,
+        distractor_product_id,
+    )
+    required = set(contract["tools"][tool_name]["required_parameters"])
+    actual = set(parameters)
+    if actual != required:
+        missing = sorted(required - actual)
+        unexpected = sorted(actual - required)
+        raise ValueError(
+            f"{tool_name} parameters do not match tool contract; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    return {"name": tool_name, "parameters": parameters}
 
 
 def _assign_difficulties(payloads: list[dict[str, Any]]) -> None:
@@ -540,6 +627,7 @@ def build_cases(
                 metadata: dict[str, Any] = {
                     "source_label": manifest["source_label"],
                     "variant": variant + 1,
+                    "semantic_family_id": f"{task.value}:{capability.value}",
                     "holdout_policy": "final_evaluation_only",
                     "complexity_score": complexity_score,
                     "top_k": (
@@ -573,17 +661,21 @@ def build_cases(
                         "capability_tags": [capability],
                         "difficulty": "easy",
                         "split": split,
-                        "user_input": _question(task, capability, variant, distractor),
+                        "user_input": _question(
+                            task,
+                            capability,
+                            split,
+                            variant,
+                            distractor,
+                        ),
                         "expected_tool_calls": [
-                            {
-                                "name": tool_name,
-                                "parameters": _tool_parameters(
-                                    tool_name,
-                                    rows,
-                                    base_metrics,
-                                    distractor,
-                                ),
-                            }
+                            _tool_call(
+                                tool_name,
+                                rows,
+                                base_metrics,
+                                contract,
+                                distractor,
+                            )
                             for tool_name in tool_names
                         ],
                         "allowed_alternatives": [],
