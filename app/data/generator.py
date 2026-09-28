@@ -1,5 +1,8 @@
+from collections.abc import Sequence
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from hashlib import sha256
+from typing import TypeVar
 
 import numpy as np
 import pandas as pd
@@ -8,35 +11,75 @@ from app.data.config import SyntheticDataConfig
 from app.data.schemas import CustomerRow, ProductRow
 
 CENT = Decimal("0.01")
+PRICE_MIN = 30
+PRICE_MAX_EXCLUSIVE = 500
+MARGIN_BASIS_POINTS_MIN = 2500
+MARGIN_BASIS_POINTS_MAX_EXCLUSIVE = 6001
+BASIS_POINTS_PER_UNIT = Decimal(10_000)
+LAUNCH_AGE_DAYS_MIN = 30
+LAUNCH_AGE_DAYS_MAX_EXCLUSIVE = 720
+NEW_CUSTOMER_PROBABILITY = 0.28
+DimensionValue = TypeVar("DimensionValue")
 
 
-def _rng(config: SyntheticDataConfig, stream: int) -> np.random.Generator:
-    return np.random.default_rng(np.random.SeedSequence([config.seed, stream]))
+def _rng(config: SyntheticDataConfig, stream_name: str) -> np.random.Generator:
+    digest = sha256(stream_name.encode("utf-8")).digest()
+    stream_entropy = [
+        int.from_bytes(digest[offset : offset + 4], "big")
+        for offset in range(0, 16, 4)
+    ]
+    return np.random.default_rng(np.random.SeedSequence([config.seed, *stream_entropy]))
+
+
+def _shuffled_balanced_values(
+    values: Sequence[DimensionValue],
+    count: int,
+    rng: np.random.Generator,
+) -> list[DimensionValue]:
+    balanced = [values[index % len(values)] for index in range(count)]
+    rng.shuffle(balanced)
+    return balanced
 
 
 def generate_products(config: SyntheticDataConfig) -> pd.DataFrame:
-    rng = _rng(config, 1)
-    prices = rng.integers(30, 500, size=config.product_count)
-    margin_basis_points = rng.integers(2500, 6001, size=config.product_count)
+    prices = _rng(config, "products.price").integers(
+        PRICE_MIN,
+        PRICE_MAX_EXCLUSIVE,
+        size=config.product_count,
+    )
+    margin_basis_points = _rng(config, "products.margin").integers(
+        MARGIN_BASIS_POINTS_MIN,
+        MARGIN_BASIS_POINTS_MAX_EXCLUSIVE,
+        size=config.product_count,
+    )
+    launch_ages = _rng(config, "products.launch_date").integers(
+        LAUNCH_AGE_DAYS_MIN,
+        LAUNCH_AGE_DAYS_MAX_EXCLUSIVE,
+        size=config.product_count,
+    )
+    categories = _shuffled_balanced_values(
+        config.categories,
+        config.product_count,
+        _rng(config, "products.category"),
+    )
     rows: list[dict[str, object]] = []
 
-    for index, (price_value, margin_basis_points_value) in enumerate(
-        zip(prices, margin_basis_points, strict=True),
+    for index, (price_value, margin_basis_points_value, launch_age, category) in enumerate(
+        zip(prices, margin_basis_points, launch_ages, categories, strict=True),
         start=1,
     ):
         price = Decimal(int(price_value)).quantize(CENT)
-        margin = Decimal(int(margin_basis_points_value)) / Decimal(10_000)
+        margin = Decimal(int(margin_basis_points_value)) / BASIS_POINTS_PER_UNIT
         cost = (price * (Decimal(1) - margin)).quantize(
             CENT, rounding=ROUND_HALF_UP
         )
         row = ProductRow(
             product_id=f"P{index:03d}",
             product_name=f"模拟商品 {index:03d}",
-            category=config.categories[(index - 1) % len(config.categories)],
+            category=category,
             price=price,
             cost=cost,
-            launch_date=config.start_date
-            - timedelta(days=int(rng.integers(30, 720))),
+            launch_date=config.start_date - timedelta(days=int(launch_age)),
         )
         rows.append(row.model_dump())
 
@@ -44,15 +87,30 @@ def generate_products(config: SyntheticDataConfig) -> pd.DataFrame:
 
 
 def generate_customers(config: SyntheticDataConfig) -> pd.DataFrame:
-    rng = _rng(config, 2)
+    new_customer_draws = _rng(config, "customers.is_new_customer").random(
+        config.customer_count
+    )
+    regions = _shuffled_balanced_values(
+        config.regions,
+        config.customer_count,
+        _rng(config, "customers.region"),
+    )
+    channel_indexes = _rng(config, "customers.channel").integers(
+        0,
+        len(config.channels),
+        size=config.customer_count,
+    )
     rows: list[dict[str, object]] = []
 
-    for index in range(1, config.customer_count + 1):
+    for index, (new_customer_draw, region, channel_index) in enumerate(
+        zip(new_customer_draws, regions, channel_indexes, strict=True),
+        start=1,
+    ):
         row = CustomerRow(
             customer_id=f"C{index:04d}",
-            is_new_customer=bool(rng.random() < 0.28),
-            region=config.regions[(index - 1) % len(config.regions)],
-            channel=config.channels[int(rng.integers(0, len(config.channels)))],
+            is_new_customer=bool(new_customer_draw < NEW_CUSTOMER_PROBABILITY),
+            region=region,
+            channel=config.channels[int(channel_index)],
         )
         rows.append(row.model_dump())
 
