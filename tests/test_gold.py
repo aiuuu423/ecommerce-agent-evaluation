@@ -8,10 +8,11 @@ import pandas as pd
 import pytest
 
 from app.data import gold
+from app.data.generator import build_snapshot
 from app.data.gold import build_gold_bundle
 
 ROOT = Path(__file__).parents[1]
-SNAPSHOT = ROOT / "data/synthetic/v1"
+CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
 GOLD_SQL = ROOT / "sql/gold"
 HAND_CHECKED_GOLD = ROOT / "tests/fixtures/hand_checked_gold_snapshot.json"
 
@@ -31,9 +32,17 @@ EXPECTED_TASKS = {
 }
 
 
-@pytest.fixture(scope="module")
-def gold_bundle() -> dict:
-    return build_gold_bundle(SNAPSHOT)
+@pytest.fixture
+def generated_snapshot(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+    dataset_dir = tmp_path / "v1"
+    manifest = build_snapshot(CONFIG, dataset_dir)
+    return dataset_dir, manifest
+
+
+@pytest.fixture
+def gold_bundle(generated_snapshot: tuple[Path, dict[str, object]]) -> dict:
+    dataset_dir, _ = generated_snapshot
+    return build_gold_bundle(dataset_dir)
 
 
 def _hand_checked_connection() -> duckdb.DuckDBPyConnection:
@@ -93,15 +102,19 @@ def _query_hand_checked(sql_name: str) -> list[dict]:
         relation = connection.execute((GOLD_SQL / sql_name).read_text(encoding="utf-8"))
         columns = [column[0] for column in relation.description]
         return [
-            dict(zip(columns, row, strict=True))
+            {
+                column: gold._json_value(value)
+                for column, value in zip(columns, row, strict=True)
+            }
             for row in relation.fetchall()
         ]
 
 
 def test_gold_bundle_covers_five_business_tasks_and_manifest_identity(
     gold_bundle: dict,
+    generated_snapshot: tuple[Path, dict[str, object]],
 ) -> None:
-    manifest = json.loads((SNAPSHOT / "manifest.json").read_text(encoding="utf-8"))
+    _, manifest = generated_snapshot
 
     assert gold_bundle["dataset_id"] == manifest["dataset_id"]
     assert gold_bundle["dataset_version"] == manifest["dataset_version"]
@@ -146,8 +159,12 @@ def test_all_gold_queries_use_traffic_as_of_date_and_expose_windows() -> None:
             }, sql_path.name
 
 
-def test_evidence_ids_are_stable_task_level_ids(gold_bundle: dict) -> None:
-    rebuilt = build_gold_bundle(SNAPSHOT)
+def test_evidence_ids_are_stable_task_level_ids(
+    gold_bundle: dict,
+    generated_snapshot: tuple[Path, dict[str, object]],
+) -> None:
+    dataset_dir, _ = generated_snapshot
+    rebuilt = build_gold_bundle(dataset_dir)
 
     for task_name, task in gold_bundle["tasks"].items():
         expected_ids = [
@@ -202,6 +219,15 @@ def test_gold_detects_p003_conversion_decline(gold_bundle: dict) -> None:
 
     assert p003["current_cvr"] < p003["previous_cvr"]
     assert p003["cvr_change"] < 0
+
+
+@pytest.mark.parametrize("sql_name", sorted(EXPECTED_SQL))
+def test_hand_checked_snapshot_asserts_complete_ordered_sql_results(
+    sql_name: str,
+) -> None:
+    fixture = json.loads(HAND_CHECKED_GOLD.read_text(encoding="utf-8"))
+
+    assert _query_hand_checked(sql_name) == fixture["expected_results"][sql_name]
 
 
 def test_conversion_uses_full_product_period_grid_and_only_returns_declines() -> None:
@@ -271,13 +297,15 @@ def test_rule_queries_expose_their_result_columns(gold_bundle: dict) -> None:
 
 def test_gold_builder_closes_catalog_when_query_fails(
     monkeypatch: pytest.MonkeyPatch,
+    generated_snapshot: tuple[Path, dict[str, object]],
 ) -> None:
-    catalog = gold.open_dataset(SNAPSHOT)
+    dataset_dir, _ = generated_snapshot
+    catalog = gold.open_dataset(dataset_dir)
     monkeypatch.setattr(gold, "open_dataset", lambda _: catalog)
     monkeypatch.setitem(gold.TASK_SQL, "gmv_diagnosis", "missing.sql")
 
     with pytest.raises(FileNotFoundError):
-        build_gold_bundle(SNAPSHOT)
+        build_gold_bundle(dataset_dir)
 
     with pytest.raises(ValueError, match="catalog is closed"):
         catalog.execute("select 1")
