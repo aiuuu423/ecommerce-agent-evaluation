@@ -24,6 +24,7 @@ AnomalyKind = Literal[
     "extreme_traffic_spike",
     "multi_factor_drop",
 ]
+EffectDimension = Literal["traffic", "conversion", "refund", "observation"]
 
 DROP_ANOMALY_KINDS = {
     "sales_drop",
@@ -32,6 +33,15 @@ DROP_ANOMALY_KINDS = {
     "multi_factor_drop",
 }
 INCREASE_ANOMALY_KINDS = {"high_refund", "extreme_traffic_spike"}
+ANOMALY_EFFECT_DIMENSIONS: dict[AnomalyKind, frozenset[EffectDimension]] = {
+    "sales_drop": frozenset({"conversion"}),
+    "traffic_drop": frozenset({"traffic"}),
+    "conversion_drop": frozenset({"conversion"}),
+    "high_refund": frozenset({"refund"}),
+    "missing_traffic": frozenset({"observation"}),
+    "extreme_traffic_spike": frozenset({"traffic"}),
+    "multi_factor_drop": frozenset({"traffic", "conversion"}),
+}
 NonBlankString = Annotated[str, Field(pattern=r"\S")]
 
 
@@ -107,12 +117,11 @@ class SyntheticDataConfig(BaseModel):
                     f"{anomaly.anomaly_id}: product_id is outside configured product range"
                 )
 
-        anomalies_by_target: dict[tuple[str, str], list[AnomalyConfig]] = {}
+        anomalies_by_product: dict[str, list[AnomalyConfig]] = {}
         for anomaly in self.anomalies:
-            target = (anomaly.product_id, anomaly.kind)
-            anomalies_by_target.setdefault(target, []).append(anomaly)
+            anomalies_by_product.setdefault(anomaly.product_id, []).append(anomaly)
 
-        for (product_id, kind), anomalies in anomalies_by_target.items():
+        for product_id, anomalies in anomalies_by_product.items():
             ordered = sorted(
                 anomalies,
                 key=lambda anomaly: (
@@ -121,14 +130,26 @@ class SyntheticDataConfig(BaseModel):
                     anomaly.anomaly_id,
                 ),
             )
-            for previous, current in zip(ordered, ordered[1:], strict=False):
-                if current.start_day <= previous.end_day:
-                    first_id, second_id = sorted(
-                        (previous.anomaly_id, current.anomaly_id)
+            for index, current in enumerate(ordered):
+                for other in ordered[index + 1 :]:
+                    if other.start_day > current.end_day:
+                        break
+                    shared_dimensions = (
+                        ANOMALY_EFFECT_DIMENSIONS[current.kind]
+                        & ANOMALY_EFFECT_DIMENSIONS[other.kind]
                     )
+                    if not shared_dimensions:
+                        continue
+                    first_id, second_id = sorted(
+                        (current.anomaly_id, other.anomaly_id)
+                    )
+                    dimension_label = "effect dimension"
+                    if len(shared_dimensions) > 1:
+                        dimension_label = "effect dimensions"
+                    dimensions = ", ".join(sorted(shared_dimensions))
                     raise ValueError(
                         f"{first_id} and {second_id}: overlapping anomaly windows "
-                        f"for product {product_id} and kind {kind}"
+                        f"for product {product_id} and {dimension_label} {dimensions}"
                     )
         return self
 

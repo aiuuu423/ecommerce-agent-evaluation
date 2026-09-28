@@ -245,7 +245,7 @@ def test_rejects_ambiguous_anomaly_targets(
         ((10, 20), (0, 10)),
     ],
 )
-def test_rejects_overlapping_anomaly_windows_for_same_product_and_kind(
+def test_rejects_overlapping_anomaly_windows_for_same_product_and_effect_dimension(
     first_window: tuple[int, int], second_window: tuple[int, int]
 ) -> None:
     anomalies = [
@@ -265,7 +265,40 @@ def test_rejects_overlapping_anomaly_windows_for_same_product_and_kind(
     assert error["type"] == "value_error"
     assert str(error["ctx"]["error"]) == (
         "A1 and A2: overlapping anomaly windows for product P001 "
-        "and kind traffic_drop"
+        "and effect dimension traffic"
+    )
+
+
+@pytest.mark.parametrize(
+    ("first_kind", "second_kind", "effect_dimension"),
+    [
+        ("sales_drop", "conversion_drop", "conversion"),
+        ("traffic_drop", "multi_factor_drop", "traffic"),
+        ("conversion_drop", "multi_factor_drop", "conversion"),
+    ],
+)
+def test_rejects_overlapping_anomalies_with_intersecting_effect_dimensions(
+    first_kind: str, second_kind: str, effect_dimension: str
+) -> None:
+    anomalies = [
+        anomaly_data(kind=first_kind, start_day=0, end_day=10),
+        anomaly_data(
+            anomaly_id="A2",
+            kind=second_kind,
+            start_day=5,
+            end_day=15,
+        ),
+    ]
+
+    with pytest.raises(ValidationError) as exc_info:
+        SyntheticDataConfig.model_validate(minimal_config(anomalies=anomalies))
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ()
+    assert error["type"] == "value_error"
+    assert str(error["ctx"]["error"]) == (
+        "A1 and A2: overlapping anomaly windows for product P001 "
+        f"and effect dimension {effect_dimension}"
     )
 
 
