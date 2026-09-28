@@ -6,10 +6,16 @@
 
 ## Phase 1
 
+所有项目命令通过 Makefile 的 `PYTHON` 入口运行，并要求 Python 3.11+。默认入口是
+`python3`；如果系统默认版本较旧，请显式覆盖：
+
 ```bash
-python3 -m pip install -e ".[dev]"
-make phase1
-python3 -m pytest
+make PYTHON=python3.12 install
+make PYTHON=python3.12 phase1
+make PYTHON=python3.12 test
 ```
+
+`requirements.lock` 固定完整的开发与运行时依赖树。修改 `pyproject.toml` 后，使用已安装
+`pip-tools` 的 Python 3.11+ 环境运行 `make PYTHON=python3.12 lock`，审阅 lock 文件差异后提交。
 
 Phase 1 不需要 API Key。真实模型接入将在后续 Phase 实现。

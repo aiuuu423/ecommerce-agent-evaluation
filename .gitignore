@@ -1,6 +1,7 @@
 .worktrees/
 .DS_Store
-.env
+.env*
+!.env.example
 .venv/
 __pycache__/
 *.py[cod]
