@@ -20,6 +20,16 @@ OrderId = Annotated[
     Field(pattern=r"^O[0-9]{8}-P[0-9]{3}-[0-9]{6}$"),
 ]
 CampaignId = Annotated[str, Field(pattern=r"^M[0-9]{3}$")]
+Sha256Hex = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
+EvidenceId = Annotated[
+    str,
+    Field(
+        pattern=(
+            r"^EV_(GMV_DIAGNOSIS|PRODUCT_ANOMALY|CONVERSION_DECLINE|"
+            r"PRODUCTS_TO_WATCH|NEXT_WEEK_PRIORITY)_[0-9]{3}$"
+        )
+    ),
+]
 
 
 class DatasetRowModel(BaseModel):
@@ -202,7 +212,7 @@ class ExpectedToolCall(EvaluationModel):
 
 
 class GoldEvidence(EvaluationModel):
-    evidence_id: str = Field(pattern=r"^EV_CASE_[0-9]{3}_[0-9]{2}$")
+    evidence_id: EvidenceId
     source: str = Field(min_length=1)
     dimensions: dict[str, JsonValue]
     metrics: dict[str, GoldValue] = Field(min_length=1)
@@ -224,6 +234,7 @@ class EvaluationCase(EvaluationModel):
     case_version: str = Field(min_length=1)
     dataset_version: str = Field(min_length=1)
     dataset_id: str = Field(pattern=r"^[0-9a-f]{16}$")
+    generator_config_hash: Sha256Hex
     business_task: BusinessTask
     primary_capability: Capability
     capability_tags: list[Capability] = Field(min_length=1)
@@ -282,20 +293,7 @@ class EvaluationCase(EvaluationModel):
                 )
             alternative_paths.add(signature)
 
-        expected_evidence_prefix = f"EV_{self.case_id}_"
         evidence_ids = [evidence.evidence_id for evidence in self.gold_evidence]
-        if any(
-            not evidence_id.startswith(expected_evidence_prefix)
-            for evidence_id in evidence_ids
-        ):
-            wrong_ids = sorted(
-                evidence_id
-                for evidence_id in evidence_ids
-                if not evidence_id.startswith(expected_evidence_prefix)
-            )
-            raise ValueError(
-                f"evidence_id must belong to case_id: {', '.join(wrong_ids)}"
-            )
         if len(evidence_ids) != len(set(evidence_ids)):
             duplicate_ids = sorted(
                 {
