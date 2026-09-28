@@ -1,9 +1,14 @@
+import json
+from collections import Counter
 from copy import deepcopy
 from math import inf, nan
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from app.data.case_generator import build_cases, write_cases
+from app.data.generator import build_snapshot
 from app.data.schemas import (
     BusinessTask,
     Capability,
@@ -490,3 +495,179 @@ def test_nested_model_forbids_undeclared_fields_without_false_positive() -> None
     assert [error["loc"] for error in exc_info.value.errors()] == [
         ("expected_tool_calls", 0, "unexpected")
     ]
+
+
+def test_builds_exact_balanced_traceable_case_set(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "v1"
+    manifest = build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+
+    cases = build_cases(dataset_dir)
+
+    assert len(cases) == 100
+    assert [case.case_id for case in cases] == [
+        f"CASE_{number:03d}" for number in range(1, 101)
+    ]
+    assert Counter(case.business_task.value for case in cases) == {
+        "gmv_diagnosis": 20,
+        "product_anomaly": 20,
+        "conversion_decline": 20,
+        "products_to_watch": 20,
+        "next_week_priority": 20,
+    }
+    assert Counter(case.primary_capability.value for case in cases) == {
+        capability.value: 10 for capability in Capability
+    }
+    assert Counter(case.difficulty for case in cases) == {
+        "easy": 30,
+        "medium": 40,
+        "hard": 30,
+    }
+    assert Counter(case.split for case in cases) == {
+        "development": 70,
+        "holdout": 30,
+    }
+    assert {
+        task: Counter(case.split for case in cases if case.business_task.value == task)
+        for task in BusinessTask
+    } == {
+        task: Counter({"development": 14, "holdout": 6})
+        for task in BusinessTask
+    }
+    assert all(case.dataset_id == manifest["dataset_id"] for case in cases)
+    assert all(case.dataset_version == manifest["dataset_version"] for case in cases)
+    assert all(
+        case.generator_config_hash == manifest["config_sha256"] for case in cases
+    )
+
+
+def test_cases_bind_stable_evidence_metrics_and_capability_semantics(
+    tmp_path: Path,
+) -> None:
+    dataset_dir = tmp_path / "v1"
+    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+
+    first = build_cases(dataset_dir)
+    second = build_cases(dataset_dir)
+
+    assert [case.model_dump(mode="json") for case in first] == [
+        case.model_dump(mode="json") for case in second
+    ]
+    for case in first:
+        evidence = {row.evidence_id: row for row in case.gold_evidence}
+        assert set(case.gold_metric_evidence) == set(case.gold_metrics)
+        for metric, evidence_id in case.gold_metric_evidence.items():
+            assert evidence[evidence_id].metrics[metric] == case.gold_metrics[metric]
+        assert case.metadata["source_label"] == "Synthetic E-commerce Data"
+        assert case.metadata["holdout_policy"] == "final_evaluation_only"
+
+    insufficient = [
+        case
+        for case in first
+        if case.primary_capability is Capability.DATA_INSUFFICIENCY
+    ]
+    assert len(insufficient) == 10
+    assert all(
+        {row.dimensions.get("product_id") for row in case.gold_evidence} == {"P005"}
+        for case in insufficient
+    )
+    assert all(
+        case.expected_tool_calls[0].name == "query_traffic"
+        and case.expected_tool_calls[0].parameters["product_ids"] == ["P005"]
+        and case.expected_tool_calls[0].parameters["include_missing"] is True
+        for case in insufficient
+    )
+
+
+def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
+    tmp_path: Path,
+) -> None:
+    dataset_dir = tmp_path / "v1"
+    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+    cases = build_cases(dataset_dir)
+
+    required_parameters = {
+        "query_product": {"product_ids"},
+        "query_sales": {
+            "start_date",
+            "end_date",
+            "comparison_start_date",
+            "comparison_end_date",
+            "product_ids",
+            "include_refunds",
+        },
+        "query_traffic": {
+            "start_date",
+            "end_date",
+            "comparison_start_date",
+            "comparison_end_date",
+            "product_ids",
+            "include_missing",
+        },
+        "query_marketing": {
+            "start_date",
+            "end_date",
+            "comparison_start_date",
+            "comparison_end_date",
+            "product_ids",
+            "campaign_ids",
+        },
+        "calculate_metrics": {"metrics", "group_by"},
+    }
+    for case in cases:
+        for call in case.expected_tool_calls:
+            assert set(call.parameters) == required_parameters[call.name]
+
+    products = set(
+        __import__("pandas").read_parquet(dataset_dir / "products.parquet")["product_id"]
+    )
+    adversarial = [
+        case
+        for case in cases
+        if case.primary_capability is Capability.ADVERSARIAL_DISTRACTOR
+    ]
+    assert len(adversarial) == 10
+    for case in adversarial:
+        distractor = case.metadata["distractor_product_id"]
+        assert distractor in products
+        assert distractor in case.user_input
+        assert distractor not in {
+            row.dimensions.get("product_id") for row in case.gold_evidence
+        }
+        assert "P999" not in case.user_input
+
+
+def test_jsonl_and_manifest_are_reproducible_and_do_not_leak_config(
+    tmp_path: Path,
+) -> None:
+    dataset_dir = tmp_path / "v1"
+    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
+    cases = build_cases(dataset_dir)
+    first_path = tmp_path / "first.jsonl"
+    second_path = tmp_path / "second.jsonl"
+
+    first_manifest = write_cases(cases, first_path)
+    second_manifest = write_cases(build_cases(dataset_dir), second_path)
+
+    assert first_path.read_bytes() == second_path.read_bytes()
+    assert first_manifest == second_manifest
+    assert first_manifest["case_count"] == 100
+    assert first_manifest["split_counts"] == {"development": 70, "holdout": 30}
+    assert first_manifest["jsonl_sha256"]
+    assert first_manifest["case_set_id"]
+    assert json.loads(
+        first_path.with_suffix(".manifest.json").read_text(encoding="utf-8")
+    ) == first_manifest
+    serialized = first_path.read_text(encoding="utf-8")
+    for forbidden in (
+        "anomaly_id",
+        "multiplier",
+        "synthetic_v1.yaml",
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+    ):
+        assert forbidden not in serialized
