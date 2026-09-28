@@ -1,11 +1,17 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from pandas.testing import assert_frame_equal
 
+from app.data import generator
 from app.data.config import load_data_config
-from app.data.generator import generate_customers, generate_products
+from app.data.generator import (
+    _launch_date,
+    generate_customers,
+    generate_products,
+)
 from app.data.schemas import CustomerRow, ProductRow
 
 ROOT = Path(__file__).parents[1]
@@ -46,6 +52,47 @@ def test_dimension_generation_is_independent_of_call_order() -> None:
     assert_frame_equal(customers_first, customers_second)
 
 
+@pytest.mark.parametrize(
+    ("stream_name", "generated_table", "affected_columns"),
+    [
+        ("products.price", "products", {"price", "cost"}),
+        ("products.margin", "products", {"cost"}),
+        ("products.launch_date", "products", {"launch_date"}),
+        ("products.category", "products", {"category"}),
+        ("customers.is_new_customer", "customers", {"is_new_customer"}),
+        ("customers.region", "customers", {"region"}),
+        ("customers.channel", "customers", {"channel"}),
+    ],
+)
+def test_random_fields_use_isolated_substreams(
+    monkeypatch: pytest.MonkeyPatch,
+    stream_name: str,
+    generated_table: str,
+    affected_columns: set[str],
+) -> None:
+    config = load_data_config(CONFIG)
+    generate = generate_products if generated_table == "products" else generate_customers
+    baseline = generate(config)
+    original_rng = generator._rng
+
+    def rng_with_one_changed_stream(current_config, current_stream_name):
+        if current_stream_name == stream_name:
+            changed_config = config.model_copy(update={"seed": config.seed + 1})
+            return original_rng(changed_config, current_stream_name)
+        return original_rng(current_config, current_stream_name)
+
+    monkeypatch.setattr(generator, "_rng", rng_with_one_changed_stream)
+    changed = generate(config)
+    unaffected_columns = [
+        column for column in baseline.columns if column not in affected_columns
+    ]
+
+    assert_frame_equal(baseline[unaffected_columns], changed[unaffected_columns])
+    assert any(
+        not baseline[column].equals(changed[column]) for column in affected_columns
+    )
+
+
 def test_dimension_ids_are_sequential_unique_and_counts_match() -> None:
     config = load_data_config(CONFIG)
     products = generate_products(config)
@@ -77,17 +124,42 @@ def test_dimensions_cover_configured_values_without_id_periodicity() -> None:
     assert customers["region"].tolist() != (
         config.regions * config.customer_count
     )[: config.customer_count]
+    assert customers["channel"].tolist() != (
+        config.channels * config.customer_count
+    )[: config.customer_count]
 
 
-def test_v1_product_categories_are_balanced() -> None:
+def test_v1_dimensions_are_balanced() -> None:
     config = load_data_config(CONFIG)
     category_counts = generate_products(config)["category"].value_counts()
+    customers = generate_customers(config)
+    region_counts = customers["region"].value_counts()
+    channel_counts = customers["channel"].value_counts()
 
     assert category_counts.max() - category_counts.min() <= 1
-    assert category_counts.to_dict() == {
-        category: config.product_count // len(config.categories)
-        for category in config.categories
-    }
+    assert region_counts.max() - region_counts.min() <= 1
+    assert channel_counts.max() - channel_counts.min() <= 1
+
+
+def _has_fixed_period(values: list[str], period: int) -> bool:
+    return all(value == values[index % period] for index, value in enumerate(values))
+
+
+def test_balanced_dimensions_are_not_fixed_cycles_across_seeds() -> None:
+    config = load_data_config(CONFIG)
+
+    for seed in range(10):
+        seeded_config = config.model_copy(update={"seed": seed})
+        products = generate_products(seeded_config)
+        customers = generate_customers(seeded_config)
+
+        assert not _has_fixed_period(
+            products["category"].tolist(), len(config.categories)
+        )
+        assert not _has_fixed_period(customers["region"].tolist(), len(config.regions))
+        assert not _has_fixed_period(
+            customers["channel"].tolist(), len(config.channels)
+        )
 
 
 def test_product_launch_dates_have_expected_range_and_diversity() -> None:
@@ -97,6 +169,19 @@ def test_product_launch_dates_have_expected_range_and_diversity() -> None:
     assert launch_dates.min() >= config.start_date - timedelta(days=719)
     assert launch_dates.max() <= config.start_date - timedelta(days=30)
     assert launch_dates.nunique() > 1
+
+
+@pytest.mark.parametrize(
+    ("age_days", "expected"),
+    [
+        (30, date(2025, 12, 2)),
+        (719, date(2024, 1, 13)),
+    ],
+)
+def test_launch_date_pure_function_includes_age_boundaries(
+    age_days: int, expected: date
+) -> None:
+    assert _launch_date(date(2026, 1, 1), age_days) == expected
 
 
 def test_generated_dimensions_reuse_schema_and_config_contracts() -> None:

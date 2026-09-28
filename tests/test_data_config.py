@@ -150,6 +150,28 @@ def test_dimension_values_must_be_unique(field: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "count_field", "values"),
+    [
+        ("categories", "product_count", [f"category-{index}" for index in range(8)]),
+        ("regions", "customer_count", [f"region-{index}" for index in range(21)]),
+        ("channels", "customer_count", [f"channel-{index}" for index in range(21)]),
+    ],
+)
+def test_dimension_value_count_cannot_exceed_corresponding_entity_count(
+    field: str, count_field: str, values: list[str]
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        SyntheticDataConfig.model_validate(minimal_config(**{field: values}))
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ()
+    assert error["type"] == "value_error"
+    assert str(error["ctx"]["error"]) == (
+        f"{field} has more values than {count_field}"
+    )
+
+
+@pytest.mark.parametrize(
     "dataset_version",
     ["../v1", "v1/next", "v1.next", "V1", "版本1", "-v1", "v1-"],
 )

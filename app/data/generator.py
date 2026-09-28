@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from typing import TypeVar
@@ -41,6 +41,10 @@ def _shuffled_balanced_values(
     return balanced
 
 
+def _launch_date(start_date: date, launch_age_days: int) -> date:
+    return start_date - timedelta(days=launch_age_days)
+
+
 def generate_products(config: SyntheticDataConfig) -> pd.DataFrame:
     prices = _rng(config, "products.price").integers(
         PRICE_MIN,
@@ -79,7 +83,7 @@ def generate_products(config: SyntheticDataConfig) -> pd.DataFrame:
             category=category,
             price=price,
             cost=cost,
-            launch_date=config.start_date - timedelta(days=int(launch_age)),
+            launch_date=_launch_date(config.start_date, int(launch_age)),
         )
         rows.append(row.model_dump())
 
@@ -95,22 +99,22 @@ def generate_customers(config: SyntheticDataConfig) -> pd.DataFrame:
         config.customer_count,
         _rng(config, "customers.region"),
     )
-    channel_indexes = _rng(config, "customers.channel").integers(
-        0,
-        len(config.channels),
-        size=config.customer_count,
+    channels = _shuffled_balanced_values(
+        config.channels,
+        config.customer_count,
+        _rng(config, "customers.channel"),
     )
     rows: list[dict[str, object]] = []
 
-    for index, (new_customer_draw, region, channel_index) in enumerate(
-        zip(new_customer_draws, regions, channel_indexes, strict=True),
+    for index, (new_customer_draw, region, channel) in enumerate(
+        zip(new_customer_draws, regions, channels, strict=True),
         start=1,
     ):
         row = CustomerRow(
             customer_id=f"C{index:04d}",
             is_new_customer=bool(new_customer_draw < NEW_CUSTOMER_PROBABILITY),
             region=region,
-            channel=config.channels[int(channel_index)],
+            channel=channel,
         )
         rows.append(row.model_dump())
 

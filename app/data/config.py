@@ -82,7 +82,16 @@ class SyntheticDataConfig(BaseModel):
         return values
 
     @model_validator(mode="after")
-    def validate_anomaly_ranges(self) -> "SyntheticDataConfig":
+    def validate_cross_field_constraints(self) -> "SyntheticDataConfig":
+        dimension_limits = (
+            ("categories", self.categories, "product_count", self.product_count),
+            ("regions", self.regions, "customer_count", self.customer_count),
+            ("channels", self.channels, "customer_count", self.customer_count),
+        )
+        for field, values, count_field, entity_count in dimension_limits:
+            if len(values) > entity_count:
+                raise ValueError(f"{field} has more values than {count_field}")
+
         anomaly_ids = [anomaly.anomaly_id for anomaly in self.anomalies]
         if len(anomaly_ids) != len(set(anomaly_ids)):
             raise ValueError("anomaly_id values must be unique")
