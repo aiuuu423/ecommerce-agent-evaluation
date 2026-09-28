@@ -1,28 +1,21 @@
+import io
 import json
-import re
+import os
+import stat
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import duckdb
+import pandas as pd
 
-from app.data.manifest import contained_path, file_sha256, manifest_id
-from app.data.validation import TABLE_NAMES
+from app.data.manifest import (
+    TABLE_NAMES,
+    dataset_id_for_tables,
+    logical_table_sha256,
+    validate_manifest,
+)
 
-_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_DIGEST = re.compile(r"^[0-9a-f]{64}$")
-_DATASET_ID = re.compile(r"^[0-9a-f]{16}$")
-_MANIFEST_KEYS = {
-    "dataset_id",
-    "dataset_version",
-    "schema_version",
-    "source_label",
-    "seed",
-    "config_sha256",
-    "writer",
-    "tables",
-    "data_quality_report",
-}
-_TABLE_METADATA_KEYS = {"file", "rows", "logical_sha256", "sha256"}
 _QUALITY_KEYS = {
     "status",
     "source_label",
@@ -32,118 +25,107 @@ _QUALITY_KEYS = {
 }
 
 
-def _load_json_object(path: Path, label: str) -> dict[str, Any]:
+def _load_json_object(data: bytes, label: str) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{label} is invalid") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{label} is invalid")
     return payload
 
 
-def _valid_digest(value: object) -> bool:
-    return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
+def _read_regular_file(path: Path, missing_message: str) -> bytes:
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(missing_message) from exc
+    if stat.S_ISLNK(path_stat.st_mode):
+        raise ValueError(f"snapshot artifact must not be a symbolic link: {path.name}")
+    if not stat.S_ISREG(path_stat.st_mode):
+        raise ValueError(f"snapshot artifact must be a regular file: {path.name}")
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"snapshot artifact could not be opened safely: {path.name}") from exc
+    try:
+        opened_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            raise ValueError(f"snapshot artifact must be a regular file: {path.name}")
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            return source.read()
+    finally:
+        os.close(descriptor)
 
 
-def _validate_table_set(
+def _snapshot_directory(dataset_dir: Path | str) -> Path:
+    path = Path(dataset_dir).absolute()
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"dataset directory does not exist: {path}") from exc
+    if stat.S_ISLNK(path_stat.st_mode):
+        raise ValueError(f"dataset directory must not be a symbolic link: {path}")
+    if not stat.S_ISDIR(path_stat.st_mode):
+        raise ValueError(f"dataset path must be a directory: {path}")
+    for artifact in path.iterdir():
+        if artifact.is_symlink():
+            raise ValueError(
+                f"snapshot artifact must not be a symbolic link: {artifact.name}"
+            )
+    return path
+
+
+def _load_verified_tables(
     manifest: dict[str, Any],
     dataset_dir: Path,
-) -> dict[str, Path]:
-    tables = manifest.get("tables")
-    if not isinstance(tables, dict):
-        raise ValueError("manifest tables must be an object")
-    for name in tables:
-        if not isinstance(name, str) or _SAFE_IDENTIFIER.fullmatch(name) is None:
-            raise ValueError(f"unsafe table identifier: {name!r}")
-    if set(tables) != set(TABLE_NAMES):
-        raise ValueError("manifest must contain exactly the five required tables")
-
+) -> dict[str, pd.DataFrame]:
     expected_files = {f"{name}.parquet" for name in TABLE_NAMES}
-    actual_files = {path.name for path in dataset_dir.glob("*.parquet")}
+    actual_files = {
+        path.name
+        for path in dataset_dir.iterdir()
+        if path.is_file() and path.suffix == ".parquet"
+    }
     if actual_files - expected_files:
         raise ValueError("snapshot contains unexpected parquet files")
 
-    table_paths: dict[str, Path] = {}
+    tables: dict[str, pd.DataFrame] = {}
     for name in TABLE_NAMES:
-        metadata = tables[name]
-        valid_metadata = (
-            isinstance(metadata, dict)
-            and set(metadata) == _TABLE_METADATA_KEYS
-            and metadata.get("file") == f"{name}.parquet"
-            and type(metadata.get("rows")) is int
-            and metadata["rows"] >= 0
-            and _valid_digest(metadata.get("logical_sha256"))
-            and _valid_digest(metadata.get("sha256"))
+        metadata = manifest["tables"][name]
+        data = _read_regular_file(
+            dataset_dir / metadata["file"],
+            f"missing table file: {name}",
         )
-        if not valid_metadata:
-            raise ValueError(f"table metadata is invalid: {name}")
+        if sha256(data).hexdigest() != metadata["sha256"]:
+            raise ValueError(f"table hash mismatch: {name}")
         try:
-            path = contained_path(dataset_dir, metadata["file"])
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"table metadata is invalid: {name}") from exc
-        if not path.is_file():
-            raise ValueError(f"missing table file: {name}")
-        table_paths[name] = path
-    return table_paths
+            frame = pd.read_parquet(io.BytesIO(data))
+        except Exception as exc:
+            raise ValueError(f"table parquet is invalid: {name}") from exc
+        if len(frame) != metadata["rows"]:
+            raise ValueError(f"table row count mismatch: {name}")
+        if logical_table_sha256(frame) != metadata["logical_sha256"]:
+            raise ValueError(f"table logical hash mismatch: {name}")
+        tables[name] = frame
 
-
-def _validate_manifest(
-    manifest: dict[str, Any],
-    dataset_dir: Path,
-) -> dict[str, Path]:
-    scalar_fields_are_valid = (
-        set(manifest) == _MANIFEST_KEYS
-        and isinstance(manifest.get("dataset_id"), str)
-        and _DATASET_ID.fullmatch(manifest["dataset_id"]) is not None
-        and all(
-            isinstance(manifest.get(field), str) and bool(manifest[field])
-            for field in ("dataset_version", "schema_version", "source_label")
-        )
-        and type(manifest.get("seed")) is int
-        and _valid_digest(manifest.get("config_sha256"))
-        and isinstance(manifest.get("writer"), dict)
-        and bool(manifest["writer"])
-    )
-    if not scalar_fields_are_valid:
-        raise ValueError("manifest is invalid")
-
-    quality_metadata = manifest.get("data_quality_report")
-    if not (
-        isinstance(quality_metadata, dict)
-        and set(quality_metadata) == {"file", "sha256"}
-        and quality_metadata.get("file") == "data_quality_report.json"
-        and _valid_digest(quality_metadata.get("sha256"))
-    ):
-        raise ValueError("manifest is invalid")
-    table_paths = _validate_table_set(manifest, dataset_dir)
-    identity = {
-        name: {
-            "rows": manifest["tables"][name]["rows"],
-            "logical_sha256": manifest["tables"][name]["logical_sha256"],
-        }
-        for name in TABLE_NAMES
-    }
-    if manifest_id(identity) != manifest["dataset_id"]:
+    if dataset_id_for_tables(tables) != manifest["dataset_id"]:
         raise ValueError("manifest dataset identity mismatch")
-    return table_paths
+    return tables
 
 
 def _validate_quality_report(
     manifest: dict[str, Any],
-    dataset_dir: Path,
+    quality_data: bytes,
+    tables: dict[str, pd.DataFrame],
 ) -> None:
     metadata = manifest["data_quality_report"]
-    quality_path = dataset_dir / metadata["file"]
-    if not quality_path.is_file():
-        raise ValueError("missing quality report")
-    if file_sha256(quality_path) != metadata["sha256"]:
+    if sha256(quality_data).hexdigest() != metadata["sha256"]:
         raise ValueError("quality report hash mismatch")
 
-    quality = _load_json_object(quality_path, "quality report")
-    expected_rows = {
-        name: manifest["tables"][name]["rows"] for name in TABLE_NAMES
-    }
+    quality = _load_json_object(quality_data, "quality report")
+    expected_rows = {name: len(tables[name]) for name in TABLE_NAMES}
     if not (
         set(quality) == _QUALITY_KEYS
         and quality.get("status") == "pass"
@@ -155,17 +137,80 @@ def _validate_quality_report(
         raise ValueError("quality report is invalid")
 
 
-def open_dataset(dataset_dir: Path | str) -> duckdb.DuckDBPyConnection:
-    dataset_dir = Path(dataset_dir).resolve()
-    manifest = _load_json_object(dataset_dir / "manifest.json", "manifest")
-    table_paths = _validate_manifest(manifest, dataset_dir)
+class Catalog:
+    def __init__(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        tables: dict[str, pd.DataFrame],
+    ) -> None:
+        self.__connection = connection
+        self.__tables = tables
+        self.__closed = False
 
-    for name in TABLE_NAMES:
-        if file_sha256(table_paths[name]) != manifest["tables"][name]["sha256"]:
-            raise ValueError(f"table hash mismatch: {name}")
-    _validate_quality_report(manifest, dataset_dir)
+    def execute(
+        self,
+        query: str,
+        parameters: object | None = None,
+    ) -> "Catalog":
+        if self.__closed:
+            raise ValueError("catalog is closed")
+        statements = self.__connection.extract_statements(query)
+        if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+            raise PermissionError("catalog is read-only; only one SELECT is allowed")
+        if parameters is None:
+            self.__connection.execute(query)
+        else:
+            self.__connection.execute(query, parameters)
+        return self
 
-    connection = duckdb.connect(database=":memory:")
-    for name, path in table_paths.items():
-        connection.read_parquet(str(path)).create_view(name)
-    return connection
+    def fetchone(self) -> tuple[Any, ...] | None:
+        if self.__closed:
+            raise ValueError("catalog is closed")
+        return self.__connection.fetchone()
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        if self.__closed:
+            raise ValueError("catalog is closed")
+        return self.__connection.fetchall()
+
+    def close(self) -> None:
+        if not self.__closed:
+            self.__closed = True
+            self.__connection.close()
+            self.__tables.clear()
+
+    def __enter__(self) -> "Catalog":
+        if self.__closed:
+            raise ValueError("catalog is closed")
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
+def open_dataset(dataset_dir: Path | str) -> Catalog:
+    directory = _snapshot_directory(dataset_dir)
+    manifest_data = _read_regular_file(
+        directory / "manifest.json",
+        "missing manifest",
+    )
+    manifest = _load_json_object(manifest_data, "manifest")
+    validate_manifest(manifest)
+    tables = _load_verified_tables(manifest, directory)
+    quality_data = _read_regular_file(
+        directory / manifest["data_quality_report"]["file"],
+        "missing quality report",
+    )
+    _validate_quality_report(manifest, quality_data, tables)
+
+    connection = duckdb.connect(
+        database=":memory:",
+        config={"enable_external_access": "false"},
+    )
+    try:
+        for name, frame in tables.items():
+            connection.register(name, frame)
+        return Catalog(connection, tables)
+    except BaseException:
+        connection.close()
+        raise

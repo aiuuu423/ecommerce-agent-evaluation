@@ -18,11 +18,13 @@ import pyarrow
 
 from app.data.config import SyntheticDataConfig, load_data_config_with_sha256
 from app.data.manifest import (
+    TABLE_NAMES,
     contained_path,
     dataset_id_for_tables,
     file_sha256,
     json_sha256,
     logical_table_sha256,
+    validate_manifest,
     write_json,
 )
 from app.data.schemas import (
@@ -32,7 +34,7 @@ from app.data.schemas import (
     ProductRow,
     TrafficRow,
 )
-from app.data.validation import TABLE_NAMES, validate_dataset
+from app.data.validation import validate_dataset
 
 CENT = Decimal("0.01")
 PRICE_MIN = 30
@@ -457,6 +459,7 @@ def _load_existing_snapshot(
     manifest_path = contained_path(output, "manifest.json")
     try:
         manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+        validate_manifest(manifest)
         existing_dataset_id = manifest["dataset_id"]
         table_manifest = manifest["tables"]
         quality_metadata = manifest["data_quality_report"]
@@ -474,7 +477,7 @@ def _load_existing_snapshot(
                 "writer",
             )
         }
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"existing snapshot manifest is invalid: {output}") from exc
 
     if not isinstance(table_manifest, dict) or set(table_manifest) != set(TABLE_NAMES):
@@ -626,6 +629,7 @@ def build_snapshot(
                 "tables": table_manifest,
                 "data_quality_report": quality_metadata,
             }
+            validate_manifest(manifest)
             write_json(contained_path(staging, "manifest.json"), manifest)
             _publish_snapshot(staging, output)
         except BaseException:

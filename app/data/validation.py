@@ -7,10 +7,10 @@ import pandas as pd
 from pydantic import BaseModel, ValidationError
 
 from app.data.config import SyntheticDataConfig
+from app.data.manifest import TABLE_NAMES
 from app.data.metrics import safe_divide
 from app.data.schemas import CustomerRow, MarketingRow, OrderRow, ProductRow, TrafficRow
 
-TABLE_NAMES = ("products", "customers", "traffic", "marketing", "orders")
 TABLE_SCHEMAS: dict[str, type[BaseModel]] = {
     "products": ProductRow,
     "customers": CustomerRow,

@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -8,6 +9,23 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+TABLE_NAMES = ("products", "customers", "traffic", "marketing", "orders")
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_DATASET_ID = re.compile(r"^[0-9a-f]{16}$")
+_MANIFEST_KEYS = {
+    "dataset_id",
+    "dataset_version",
+    "schema_version",
+    "source_label",
+    "seed",
+    "config_sha256",
+    "writer",
+    "tables",
+    "data_quality_report",
+}
+_TABLE_METADATA_KEYS = {"file", "rows", "logical_sha256", "sha256"}
 
 
 def file_sha256(path: Path) -> str:
@@ -80,6 +98,59 @@ def dataset_id_for_tables(tables: dict[str, pd.DataFrame]) -> str:
         for name, frame in sorted(tables.items())
     }
     return manifest_id(identity)
+
+
+def _valid_digest(value: object) -> bool:
+    return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
+
+
+def validate_manifest(manifest: dict[str, Any]) -> None:
+    scalar_fields_are_valid = (
+        set(manifest) == _MANIFEST_KEYS
+        and isinstance(manifest.get("dataset_id"), str)
+        and _DATASET_ID.fullmatch(manifest["dataset_id"]) is not None
+        and all(
+            isinstance(manifest.get(field), str) and bool(manifest[field])
+            for field in ("dataset_version", "schema_version", "source_label")
+        )
+        and type(manifest.get("seed")) is int
+        and _valid_digest(manifest.get("config_sha256"))
+        and isinstance(manifest.get("writer"), dict)
+        and bool(manifest["writer"])
+    )
+    if not scalar_fields_are_valid:
+        raise ValueError("manifest is invalid")
+
+    tables = manifest.get("tables")
+    if not isinstance(tables, dict):
+        raise ValueError("manifest tables must be an object")
+    for name in tables:
+        if not isinstance(name, str) or _SAFE_IDENTIFIER.fullmatch(name) is None:
+            raise ValueError(f"unsafe table identifier: {name!r}")
+    if set(tables) != set(TABLE_NAMES):
+        raise ValueError("manifest must contain exactly the five required tables")
+    for name in TABLE_NAMES:
+        metadata = tables[name]
+        valid_metadata = (
+            isinstance(metadata, dict)
+            and set(metadata) == _TABLE_METADATA_KEYS
+            and metadata.get("file") == f"{name}.parquet"
+            and type(metadata.get("rows")) is int
+            and metadata["rows"] >= 0
+            and _valid_digest(metadata.get("logical_sha256"))
+            and _valid_digest(metadata.get("sha256"))
+        )
+        if not valid_metadata:
+            raise ValueError(f"table metadata is invalid: {name}")
+
+    quality_metadata = manifest.get("data_quality_report")
+    if not (
+        isinstance(quality_metadata, dict)
+        and set(quality_metadata) == {"file", "sha256"}
+        and quality_metadata.get("file") == "data_quality_report.json"
+        and _valid_digest(quality_metadata.get("sha256"))
+    ):
+        raise ValueError("manifest is invalid")
 
 
 def contained_path(output_dir: Path, relative_path: str | Path) -> Path:

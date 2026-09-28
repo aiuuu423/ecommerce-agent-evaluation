@@ -3,12 +3,16 @@ import shutil
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 import pytest
 
 from app.data import database
 from app.data.database import open_dataset
 from app.data.generator import build_snapshot
-from app.data.manifest import file_sha256
+from app.data.manifest import (
+    file_sha256,
+    manifest_id,
+)
 
 ROOT = Path(__file__).parents[1]
 CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
@@ -66,8 +70,162 @@ def test_open_dataset_registers_exactly_five_read_only_views(
     for name in TABLES:
         count = connection.execute(f'select count(*) from "{name}"').fetchone()
         assert count == (manifest["tables"][name]["rows"],)
-        with pytest.raises(duckdb.Error):
+        with pytest.raises(PermissionError, match="read-only"):
             connection.execute(f'insert into "{name}" select * from "{name}" limit 1')
+    connection.close()
+
+
+def _refresh_dataset_id(manifest: dict) -> None:
+    manifest["dataset_id"] = manifest_id(
+        {
+            name: {
+                "rows": metadata["rows"],
+                "logical_sha256": metadata["logical_sha256"],
+            }
+            for name, metadata in manifest["tables"].items()
+        }
+    )
+
+
+def test_open_dataset_recomputes_rows_and_logical_hashes_from_parquet(
+    dataset_dir: Path,
+) -> None:
+    manifest = _manifest(dataset_dir)
+    manifest["tables"]["products"]["rows"] += 1
+    _refresh_dataset_id(manifest)
+    _write_manifest(dataset_dir, manifest)
+
+    with pytest.raises(ValueError, match="table row count mismatch: products"):
+        open_dataset(dataset_dir)
+
+    manifest = _manifest(dataset_dir)
+    manifest["tables"]["products"]["rows"] -= 1
+    manifest["tables"]["products"]["logical_sha256"] = "0" * 64
+    _refresh_dataset_id(manifest)
+    _write_manifest(dataset_dir, manifest)
+
+    with pytest.raises(ValueError, match="table logical hash mismatch: products"):
+        open_dataset(dataset_dir)
+
+
+def test_open_dataset_recomputes_dataset_id_from_parquet(dataset_dir: Path) -> None:
+    manifest = _manifest(dataset_dir)
+    manifest["dataset_id"] = "0" * 16
+    _write_manifest(dataset_dir, manifest)
+
+    with pytest.raises(ValueError, match="dataset identity mismatch"):
+        open_dataset(dataset_dir)
+
+
+def test_open_dataset_rejects_valid_parquet_replacement(dataset_dir: Path) -> None:
+    manifest = _manifest(dataset_dir)
+    path = dataset_dir / "products.parquet"
+    products = pd.read_parquet(path)
+    products.loc[0, "product_name"] = "replacement"
+    products.to_parquet(path, index=False)
+    manifest["tables"]["products"]["sha256"] = file_sha256(path)
+    _write_manifest(dataset_dir, manifest)
+
+    with pytest.raises(ValueError, match="table logical hash mismatch: products"):
+        open_dataset(dataset_dir)
+
+
+def test_open_dataset_materializes_verified_files_in_memory(dataset_dir: Path) -> None:
+    catalog = open_dataset(dataset_dir)
+    expected = catalog.execute("select count(*) from products").fetchone()
+
+    (dataset_dir / "products.parquet").unlink()
+
+    assert catalog.execute("select count(*) from products").fetchone() == expected
+    catalog.close()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "create table injected(value integer)",
+        "delete from products",
+        "copy products to '/tmp/products.csv'",
+        "attach ':memory:' as other",
+    ],
+)
+def test_catalog_rejects_non_select_statements(
+    dataset_dir: Path,
+    statement: str,
+) -> None:
+    with open_dataset(dataset_dir) as catalog:
+        with pytest.raises(PermissionError, match="read-only"):
+            catalog.execute(statement)
+
+
+def test_catalog_rejects_external_scans(dataset_dir: Path, tmp_path: Path) -> None:
+    external = tmp_path / "external.csv"
+    external.write_text("value\n1\n", encoding="utf-8")
+
+    with open_dataset(dataset_dir) as catalog:
+        with pytest.raises(duckdb.PermissionException):
+            catalog.execute(f"select * from read_csv('{external}')")
+
+
+def test_catalog_context_manager_closes_connection(dataset_dir: Path) -> None:
+    with open_dataset(dataset_dir) as catalog:
+        assert catalog.execute("select 1").fetchone() == (1,)
+
+    with pytest.raises(ValueError, match="closed"):
+        catalog.execute("select 1")
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "manifest.json",
+        "data_quality_report.json",
+        "products.parquet",
+    ],
+)
+def test_open_dataset_rejects_artifact_symlinks(
+    dataset_dir: Path,
+    artifact: str,
+) -> None:
+    path = dataset_dir / artifact
+    target = dataset_dir.parent / f"real-{artifact}"
+    path.rename(target)
+    path.symlink_to(target)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        open_dataset(dataset_dir)
+
+
+def test_open_dataset_rejects_dataset_directory_symlink(dataset_dir: Path) -> None:
+    link = dataset_dir.parent / "linked"
+    link.symlink_to(dataset_dir, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        open_dataset(link)
+
+
+def test_open_dataset_closes_connection_when_registration_fails(
+    dataset_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = duckdb.connect(database=":memory:")
+    closed = False
+
+    class FailingConnection:
+        def register(self, *args, **kwargs):
+            raise duckdb.Error("registration failed")
+
+        def close(self):
+            nonlocal closed
+            closed = True
+            connection.close()
+
+    monkeypatch.setattr(database.duckdb, "connect", lambda *args, **kwargs: FailingConnection())
+
+    with pytest.raises(duckdb.Error, match="registration failed"):
+        open_dataset(dataset_dir)
+
+    assert closed
 
 
 @pytest.mark.parametrize("table_name", sorted(TABLES))
