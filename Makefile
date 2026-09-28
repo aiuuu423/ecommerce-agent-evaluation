@@ -25,8 +25,13 @@ lint: check-python
 
 phase1-data: check-python
 	$(PYTHON) -m app.data.generator --config configs/data/synthetic_v1.yaml
+	$(PYTHON) -m app.data.generator --config configs/data/synthetic_holdout_v1.yaml
 
 phase1-cases: check-python
-	$(PYTHON) -m app.data.case_generator --dataset data/synthetic/v1
+	$(PYTHON) -m app.data.case_generator \
+		--development-dataset data/synthetic/v1 \
+		--holdout-dataset data/synthetic/holdout-v1 \
+		--tool-contract configs/evaluation/tool_contract_v1.yaml \
+		--output data/evaluation_cases/v1
 
 phase1: check-python phase1-data phase1-cases

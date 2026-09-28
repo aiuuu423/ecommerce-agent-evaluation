@@ -13,5 +13,10 @@ data/synthetic/*
 !data/synthetic/.gitkeep
 data/evaluation_cases/*.jsonl
 data/evaluation_cases/*.manifest.json
+data/evaluation_cases/*
+!data/evaluation_cases/.gitkeep
+!data/evaluation_cases/v1/
+!data/evaluation_cases/v1/cases.jsonl
+!data/evaluation_cases/v1/manifest.json
 data/results/*
 !data/results/.gitkeep

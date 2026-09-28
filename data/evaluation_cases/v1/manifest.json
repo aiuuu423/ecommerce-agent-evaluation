@@ -1,0 +1,58 @@
+{
+  "business_task_counts": {
+    "conversion_decline": 20,
+    "gmv_diagnosis": 20,
+    "next_week_priority": 20,
+    "product_anomaly": 20,
+    "products_to_watch": 20
+  },
+  "capability_counts": {
+    "adversarial_distractor": 10,
+    "anomaly_detection": 10,
+    "basic_query": 10,
+    "data_insufficiency": 10,
+    "metric_calculation": 10,
+    "multi_step_reasoning": 10,
+    "parameter_selection": 10,
+    "recommendation": 10,
+    "root_cause_analysis": 10,
+    "tool_selection": 10
+  },
+  "case_count": 100,
+  "case_schema_version": "1.1",
+  "case_set_id": "e16b2f7579fe28e8",
+  "datasets": {
+    "development": {
+      "dataset_id": "e1e81533c25e03e5",
+      "dataset_version": "v1",
+      "generator_config_hash": "f869b9caaa62b5db69c14b0ff5044eb913222f1da623631085cea197e578ab72"
+    },
+    "holdout": {
+      "dataset_id": "c17d4926cfa7cb26",
+      "dataset_version": "holdout-v1",
+      "generator_config_hash": "1fd16051f0a96cc1b900cd875d5c71d3de14a9d9b9e481f7efb84b069454b8f6"
+    }
+  },
+  "difficulty_counts": {
+    "easy": 30,
+    "hard": 30,
+    "medium": 40
+  },
+  "jsonl_sha256": "31c626b2a9c4c6813121fb70982564722c9ce449d2db198f5f4804dfb8265b97",
+  "source_label": "Synthetic E-commerce Data",
+  "split_counts": {
+    "development": 70,
+    "holdout": 30
+  },
+  "split_strategy": {
+    "cross_split_dataset_isolation": true,
+    "development_families_per_task": 7,
+    "holdout_families_per_task": 3,
+    "unit": "business_task_primary_capability_family",
+    "version": "split-v1"
+  },
+  "tool_contract": {
+    "sha256": "5322f0ff76356697cb655fb9ac4213aa544818241fabaf642093412a47b745f2",
+    "version": "1.0"
+  }
+}

@@ -2,11 +2,12 @@
 
 ## Current Phase
 
-`PHASE 0 — 项目架构与技术方案`
+`PHASE 1 — 模拟数据与 Evaluation Dataset`
 
-状态：`Completed / Phase 1 Plan Awaiting Approval`
+状态：`In Progress / Task 11 Completed`
 
-Phase 0 设计已经用户批准。Phase 1 原子化实施计划已形成，尚未开始 Phase 1 编码。
+Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
+100 个冻结 Evaluation Cases，下一步进入数据探索 Notebook。
 
 ## Completed
 
@@ -25,21 +26,22 @@ Phase 0 设计已经用户批准。Phase 1 原子化实施计划已形成，尚�
 - [x] 创建 Phase 0 设计文档。
 - [x] 用户批准 Phase 0 书面设计。
 - [x] 创建 Phase 1 原子化实施计划。
+- [x] 生成并验证 Development 与 Holdout 两套独立 Synthetic Data 快照。
+- [x] 冻结 100 个 Evaluation Cases（每任务 14/6 Split、每能力 10）。
+- [x] 版本化评测工具契约并修正 GMV、Next-week 与 Adversarial 工具路径。
+- [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
 
 ## Pending
 
-- [ ] 用户审阅并批准 Phase 1 实施计划。
-- [ ] 选择 Subagent-Driven 或 Inline Execution。
-- [ ] 初始化项目代码结构。
-- [ ] 开始 Synthetic Data Schema 与生成器开发。
-- [ ] 建立首批 Evaluation Cases。
+- [ ] 建立数据探索 Notebook。
+- [ ] 完成 Phase 1 文档、全量验证与阶段收尾。
 
 ## Evaluation Results
 
 | 项目 | 当前状态 |
 |---|---|
-| Synthetic Dataset | Pending / Not Run |
-| Evaluation Dataset | Pending / Not Run |
+| Synthetic Dataset | Completed / Validated |
+| Evaluation Dataset | Completed / Validated |
 | Baseline Experiment | Pending / Not Run |
 | Optimized Experiment | Pending / Not Run |
 | A/B Metrics | Pending / Not Run |
@@ -51,8 +53,8 @@ Phase 0 设计已经用户批准。Phase 1 原子化实施计划已形成，尚�
 
 ## Known Issues
 
-- 当前尚无代码、测试、数据或实验产物。
-- 当前尚未验证本机 Python 版本和依赖兼容性。
+- Synthetic Data 和 Evaluation Cases 为模拟数据，只用于受控评测。
+- Holdout 仅用于最终评测；开发过程不得读取其 Gold 内容调优 Agent。
 - Real LLM provider、具体模型和预算尚未确定；不影响 Mock 路径设计。
 - Evaluation Dataset 的 Case 分布与难度比例将在 Phase 1 实施计划中冻结。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
@@ -71,17 +73,14 @@ Phase 0 设计已经用户批准。Phase 1 原子化实施计划已形成，尚�
 
 ## Validation
 
-本文件当前只记录设计阶段状态。
-
-- 文档存在性检查：通过，三份 Phase 0 文档均存在且非空。
-- 占位符、矛盾、歧义与范围检查：通过。
-- Phase 1 计划自审：通过，共 13 个任务、70 个原子步骤；无未解决占位符。
-- Git 提交：本次 Phase 0 文档提交包含且仅包含三份设计文档；提交哈希以 Git 历史为准。
-- 代码测试：不适用，当前尚无代码。
-- 实验验证：不适用，当前尚未运行实验。
+- Task 11 定向测试：`71 passed`。
+- Development Dataset ID：`e1e81533c25e03e5`。
+- Holdout Dataset ID：`c17d4926cfa7cb26`。
+- Case Set ID：`e16b2f7579fe28e8`；JSONL SHA-256：
+  `31c626b2a9c4c6813121fb70982564722c9ce449d2db198f5f4804dfb8265b97`。
+- 全量测试：`342 passed`。
+- Ruff：`All checks passed`。
 
 ## Next Step
 
-由用户审阅 Phase 1 原子化实施计划并选择执行方式。
-
-在实施计划获批前，不开始 Phase 1 编码。
+执行 Task 12，建立只读数据探索 Notebook；不提前实现 Phase 2 工具。

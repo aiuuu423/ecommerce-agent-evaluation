@@ -1,29 +1,40 @@
 import argparse
+import fcntl
 import json
+import os
+import shutil
+import tempfile
 from collections import Counter
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import yaml
 
 from app.data.gold import build_gold_bundle
-from app.data.manifest import manifest_id, validate_manifest, write_json
+from app.data.manifest import (
+    contained_path,
+    file_sha256,
+    manifest_id,
+    validate_manifest,
+    write_json,
+)
 from app.data.schemas import BusinessTask, Capability, EvaluationCase
 
 BUSINESS_TASKS = list(BusinessTask)
 CAPABILITIES = list(Capability)
-DIFFICULTY_BY_CAPABILITY = {
-    Capability.BASIC_QUERY: "easy",
-    Capability.TOOL_SELECTION: "easy",
-    Capability.PARAMETER_SELECTION: "easy",
-    Capability.METRIC_CALCULATION: "medium",
-    Capability.ANOMALY_DETECTION: "medium",
-    Capability.DATA_INSUFFICIENCY: "medium",
-    Capability.ADVERSARIAL_DISTRACTOR: "medium",
-    Capability.MULTI_STEP_REASONING: "hard",
-    Capability.ROOT_CAUSE_ANALYSIS: "hard",
-    Capability.RECOMMENDATION: "hard",
+COMPLEXITY_WEIGHT_BY_CAPABILITY = {
+    Capability.BASIC_QUERY: 0,
+    Capability.TOOL_SELECTION: 1,
+    Capability.PARAMETER_SELECTION: 1,
+    Capability.METRIC_CALCULATION: 2,
+    Capability.ANOMALY_DETECTION: 3,
+    Capability.DATA_INSUFFICIENCY: 4,
+    Capability.ADVERSARIAL_DISTRACTOR: 4,
+    Capability.MULTI_STEP_REASONING: 5,
+    Capability.ROOT_CAUSE_ANALYSIS: 6,
+    Capability.RECOMMENDATION: 6,
 }
 SUCCESS_CRITERIA = [
     "correct_tool",
@@ -32,30 +43,13 @@ SUCCESS_CRITERIA = [
     "no_critical_unsupported_claim",
     "required_output_complete",
 ]
-TOOL_SEQUENCE_BY_TASK = {
-    BusinessTask.GMV_DIAGNOSIS: ["query_sales", "calculate_metrics"],
-    BusinessTask.PRODUCT_ANOMALY: [
-        "query_product",
-        "query_sales",
-        "query_traffic",
-        "calculate_metrics",
-    ],
-    BusinessTask.CONVERSION_DECLINE: [
-        "query_traffic",
-        "query_sales",
-        "calculate_metrics",
-    ],
-    BusinessTask.PRODUCTS_TO_WATCH: [
-        "query_sales",
-        "query_traffic",
-        "calculate_metrics",
-    ],
-    BusinessTask.NEXT_WEEK_PRIORITY: [
-        "query_sales",
-        "query_traffic",
-        "query_marketing",
-        "calculate_metrics",
-    ],
+DEFAULT_TOOL_CONTRACT = Path("configs/evaluation/tool_contract_v1.yaml")
+LIST_TOP_K = 3
+LIST_TASKS = {
+    BusinessTask.PRODUCT_ANOMALY,
+    BusinessTask.CONVERSION_DECLINE,
+    BusinessTask.PRODUCTS_TO_WATCH,
+    BusinessTask.NEXT_WEEK_PRIORITY,
 }
 PRODUCT_LEVEL_GOLD_TASKS = (
     BusinessTask.PRODUCT_ANOMALY,
@@ -176,6 +170,30 @@ def _load_manifest(dataset_dir: Path) -> dict[str, Any]:
     return payload
 
 
+def _load_tool_contract(path: Path | str) -> tuple[dict[str, Any], str]:
+    contract_path = Path(path)
+    contents = contract_path.read_bytes()
+    payload = yaml.safe_load(contents.decode("utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("contract_version"), str)
+        or not isinstance(payload.get("tools"), dict)
+        or not isinstance(payload.get("paths"), dict)
+        or not isinstance(payload.get("adversarial_prefix"), list)
+    ):
+        raise ValueError("tool contract is invalid")
+    expected_tasks = {task.value for task in BUSINESS_TASKS}
+    if set(payload["paths"]) != expected_tasks:
+        raise ValueError("tool contract must define every business task")
+    known_tools = set(payload["tools"])
+    for path in [*payload["paths"].values(), payload["adversarial_prefix"]]:
+        if not isinstance(path, list) or not path or not all(
+            isinstance(name, str) and name in known_tools for name in path
+        ):
+            raise ValueError("tool contract contains an invalid path")
+    return payload, sha256(contents).hexdigest()
+
+
 def _evidence_rows(
     gold: dict[str, Any],
     task: BusinessTask,
@@ -189,7 +207,8 @@ def _evidence_rows(
             if row.get("product_id") == "P005"
         ]
     else:
-        rows = gold["tasks"][task]["evidence"][:3]
+        limit = LIST_TOP_K if task in LIST_TASKS else 1
+        rows = gold["tasks"][task]["evidence"][:limit]
     if not rows:
         raise ValueError(f"missing gold evidence for {task.value}/{capability.value}")
     return rows
@@ -220,10 +239,25 @@ def _gold_evidence(
 def _gold_metrics(
     evidence: list[dict[str, Any]],
 ) -> tuple[dict[str, int | float | str | None], dict[str, str]]:
-    primary = evidence[0]
-    metrics = dict(primary["metrics"])
-    mapping = {metric: primary["evidence_id"] for metric in metrics}
+    metrics: dict[str, int | float | str | None] = {}
+    mapping: dict[str, str] = {}
+    qualify = len(evidence) > 1
+    for position, row in enumerate(evidence, start=1):
+        dimension = row["dimensions"].get("product_id", f"row_{position}")
+        scoreable_row: dict[str, int | float | str | None] = {}
+        for metric, value in row["metrics"].items():
+            score_key = f"{dimension}.{metric}" if qualify else metric
+            if score_key in metrics:
+                raise ValueError(f"duplicate scoreable evidence metric: {score_key}")
+            metrics[score_key] = value
+            mapping[score_key] = row["evidence_id"]
+            scoreable_row[score_key] = value
+        row["metrics"] = scoreable_row
     return metrics, mapping
+
+
+def _base_metric_names(metrics: dict[str, Any]) -> list[str]:
+    return sorted({metric.rsplit(".", 1)[-1] for metric in metrics})
 
 
 def _product_ids(rows: list[dict[str, Any]]) -> list[str]:
@@ -301,6 +335,8 @@ def _question(
     distractor_product_id: str | None,
 ) -> str:
     stem = QUESTION_STEMS[task][variant]
+    if task in LIST_TASKS and capability is not Capability.DATA_INSUFFICIENCY:
+        stem = f"{stem}请按Gold排序口径返回Top-{LIST_TOP_K}，不得省略名次。"
     if capability is Capability.ADVERSARIAL_DISTRACTOR:
         if distractor_product_id is None:
             raise ValueError("adversarial case requires a distractor product")
@@ -382,51 +418,89 @@ def _expected_behavior(
     return behavior
 
 
-def _development_case_ids(
-    payloads: list[dict[str, Any]],
-    dataset_id: str,
-) -> set[str]:
-    development: set[str] = set()
+def _development_families() -> set[tuple[BusinessTask, Capability]]:
+    development: set[tuple[BusinessTask, Capability]] = set()
     for task in BUSINESS_TASKS:
-        families = [
-            (task, capability)
-            for capability in CAPABILITIES
-        ]
+        families = [(task, capability) for capability in CAPABILITIES]
         ranked = sorted(
             families,
             key=lambda family: sha256(
-                f"{dataset_id}|{family[0].value}|{family[1].value}".encode()
+                f"split-v1|{family[0].value}|{family[1].value}".encode()
             ).hexdigest(),
         )
-        development_families = set(ranked[:7])
-        development.update(
-            payload["case_id"]
-            for payload in payloads
-            if (payload["business_task"], payload["primary_capability"])
-            in development_families
-        )
+        development.update(ranked[:7])
     return development
 
 
-def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
-    directory = Path(dataset_dir)
-    manifest = _load_manifest(directory)
-    gold = build_gold_bundle(directory)
-    if any(
-        gold[key] != manifest[key]
-        for key in ("dataset_id", "dataset_version", "config_sha256")
-    ):
-        raise ValueError("gold bundle does not match dataset manifest")
-    product_ids = set(
-        pd.read_parquet(directory / "products.parquet", columns=["product_id"])[
-            "product_id"
-        ]
+def _tool_names(
+    task: BusinessTask,
+    capability: Capability,
+    contract: dict[str, Any],
+) -> list[str]:
+    if capability is Capability.DATA_INSUFFICIENCY:
+        return list(DATA_INSUFFICIENCY_BY_TASK[task]["tool_names"])
+    names = list(contract["paths"][task.value])
+    if capability is Capability.ADVERSARIAL_DISTRACTOR:
+        names = list(dict.fromkeys([*contract["adversarial_prefix"], *names]))
+    return names
+
+
+def _assign_difficulties(payloads: list[dict[str, Any]]) -> None:
+    ranked = sorted(
+        payloads,
+        key=lambda payload: (
+            payload["metadata"]["complexity_score"],
+            payload["case_id"],
+        ),
     )
+    for index, payload in enumerate(ranked):
+        payload["difficulty"] = "easy" if index < 30 else "medium" if index < 70 else "hard"
+
+
+def build_cases(
+    development_dataset_dir: Path | str,
+    holdout_dataset_dir: Path | str,
+    tool_contract_path: Path | str = DEFAULT_TOOL_CONTRACT,
+) -> list[EvaluationCase]:
+    directories = {
+        "development": Path(development_dataset_dir),
+        "holdout": Path(holdout_dataset_dir),
+    }
+    manifests = {split: _load_manifest(path) for split, path in directories.items()}
+    if manifests["development"]["dataset_id"] == manifests["holdout"]["dataset_id"]:
+        raise ValueError("development and holdout must use different dataset snapshots")
+    gold_by_split = {
+        split: build_gold_bundle(directory) for split, directory in directories.items()
+    }
+    for split, gold in gold_by_split.items():
+        if any(
+            gold[key] != manifests[split][key]
+            for key in ("dataset_id", "dataset_version", "config_sha256")
+        ):
+            raise ValueError(f"{split} gold bundle does not match dataset manifest")
+    product_ids_by_split = {
+        split: set(
+            pd.read_parquet(directory / "products.parquet", columns=["product_id"])[
+                "product_id"
+            ]
+        )
+        for split, directory in directories.items()
+    }
+    contract, contract_digest = _load_tool_contract(tool_contract_path)
+    development_families = _development_families()
 
     payloads: list[dict[str, Any]] = []
     case_number = 1
     for task in BUSINESS_TASKS:
         for capability in CAPABILITIES:
+            split = (
+                "development"
+                if (task, capability) in development_families
+                else "holdout"
+            )
+            manifest = manifests[split]
+            gold = gold_by_split[split]
+            product_ids = product_ids_by_split[split]
             for variant in range(2):
                 rows = _evidence_rows(gold, task, capability)
                 insufficiency = (
@@ -451,15 +525,25 @@ def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
                     if capability is Capability.ADVERSARIAL_DISTRACTOR
                     else None
                 )
-                tool_names = (
-                    list(insufficiency["tool_names"])
-                    if insufficiency is not None
-                    else TOOL_SEQUENCE_BY_TASK[task]
+                tool_names = _tool_names(task, capability, contract)
+                base_metrics = _base_metric_names(metrics)
+                complexity_score = (
+                    COMPLEXITY_WEIGHT_BY_CAPABILITY[capability]
+                    + len(tool_names) * 2
+                    + len(evidence)
+                    + len(metrics) / 10
                 )
                 metadata: dict[str, Any] = {
                     "source_label": manifest["source_label"],
                     "variant": variant + 1,
                     "holdout_policy": "final_evaluation_only",
+                    "complexity_score": complexity_score,
+                    "top_k": (
+                        LIST_TOP_K
+                        if task in LIST_TASKS
+                        and capability is not Capability.DATA_INSUFFICIENCY
+                        else None
+                    ),
                 }
                 if distractor is not None:
                     metadata["distractor_product_id"] = distractor
@@ -474,21 +558,23 @@ def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
                 payloads.append(
                     {
                         "case_id": f"CASE_{case_number:03d}",
-                        "case_version": "1.0",
+                        "case_version": "1.1",
+                        "tool_contract_version": contract["contract_version"],
+                        "tool_contract_sha256": contract_digest,
                         "dataset_version": manifest["dataset_version"],
                         "dataset_id": manifest["dataset_id"],
                         "generator_config_hash": manifest["config_sha256"],
                         "business_task": task,
                         "primary_capability": capability,
                         "capability_tags": [capability],
-                        "difficulty": DIFFICULTY_BY_CAPABILITY[capability],
-                        "split": "development",
+                        "difficulty": "easy",
+                        "split": split,
                         "user_input": _question(task, capability, variant, distractor),
                         "expected_tool_calls": [
                             {
                                 "name": tool_name,
                                 "parameters": _tool_parameters(
-                                    tool_name, rows, list(metrics)
+                                    tool_name, rows, base_metrics
                                 ),
                             }
                             for tool_name in tool_names
@@ -515,28 +601,38 @@ def build_cases(dataset_dir: Path | str) -> list[EvaluationCase]:
                 )
                 case_number += 1
 
-    development_ids = _development_case_ids(payloads, manifest["dataset_id"])
-    for payload in payloads:
-        if payload["case_id"] not in development_ids:
-            payload["split"] = "holdout"
+    _assign_difficulties(payloads)
     return [EvaluationCase.model_validate(payload) for payload in payloads]
 
 
 def write_cases(
     cases: list[EvaluationCase],
-    output_path: Path | str,
+    output_dir: Path | str,
 ) -> dict[str, Any]:
     if not cases:
         raise ValueError("cannot write an empty case set")
     identities = {
-        (case.dataset_id, case.dataset_version, case.generator_config_hash)
-        for case in cases
+        split: {
+            (
+                case.dataset_id,
+                case.dataset_version,
+                case.generator_config_hash,
+            )
+            for case in cases
+            if case.split == split
+        }
+        for split in ("development", "holdout")
     }
-    if len(identities) != 1:
-        raise ValueError("all cases must reference the same dataset identity")
+    if any(len(split_identities) != 1 for split_identities in identities.values()):
+        raise ValueError("each split must reference exactly one dataset identity")
+    if identities["development"] == identities["holdout"]:
+        raise ValueError("development and holdout must reference different datasets")
+    contract_identities = {
+        (case.tool_contract_version, case.tool_contract_sha256) for case in cases
+    }
+    if len(contract_identities) != 1:
+        raise ValueError("all cases must reference the same tool contract")
 
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         json.dumps(
             case.model_dump(mode="json"),
@@ -547,13 +643,29 @@ def write_cases(
         for case in cases
     ]
     content = ("\n".join(lines) + "\n").encode("utf-8")
-    output.write_bytes(content)
-    dataset_id, dataset_version, config_hash = identities.pop()
+    datasets = {}
+    for split, split_identities in identities.items():
+        dataset_id, dataset_version, config_hash = next(iter(split_identities))
+        datasets[split] = {
+            "dataset_id": dataset_id,
+            "dataset_version": dataset_version,
+            "generator_config_hash": config_hash,
+        }
+    contract_version, contract_hash = next(iter(contract_identities))
     payload = {
-        "case_schema_version": "1.0",
-        "dataset_id": dataset_id,
-        "dataset_version": dataset_version,
-        "generator_config_hash": config_hash,
+        "case_schema_version": "1.1",
+        "tool_contract": {
+            "version": contract_version,
+            "sha256": contract_hash,
+        },
+        "datasets": datasets,
+        "split_strategy": {
+            "version": "split-v1",
+            "unit": "business_task_primary_capability_family",
+            "development_families_per_task": 7,
+            "holdout_families_per_task": 3,
+            "cross_split_dataset_isolation": True,
+        },
         "source_label": "Synthetic E-commerce Data",
         "case_count": len(cases),
         "case_set_id": manifest_id({"lines": lines}),
@@ -569,23 +681,68 @@ def write_cases(
         ),
         "split_counts": dict(sorted(Counter(case.split for case in cases).items())),
     }
-    write_json(output.with_suffix(".manifest.json"), payload)
+    output = Path(output_dir).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = output.parent / f".{output.name}.lock"
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if output.exists() or output.is_symlink():
+            if output.is_symlink() or not output.is_dir():
+                raise ValueError(f"case snapshot is not an immutable directory: {output}")
+            existing_manifest = json.loads(
+                contained_path(output, "manifest.json").read_text(encoding="utf-8")
+            )
+            existing_jsonl = contained_path(output, "cases.jsonl")
+            if (
+                existing_manifest != payload
+                or not existing_jsonl.is_file()
+                or file_sha256(existing_jsonl) != payload["jsonl_sha256"]
+            ):
+                raise ValueError(
+                    "case snapshot directory is immutable and contains different content"
+                )
+            return payload
+
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
+        ).resolve()
+        try:
+            contained_path(staging, "cases.jsonl").write_bytes(content)
+            write_json(contained_path(staging, "manifest.json"), payload)
+            os.rename(staging, output)
+        except BaseException:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
     return payload
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build the Phase 1 evaluation cases")
-    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--development-dataset", type=Path, required=True)
+    parser.add_argument("--holdout-dataset", type=Path, required=True)
+    parser.add_argument(
+        "--tool-contract",
+        type=Path,
+        default=DEFAULT_TOOL_CONTRACT,
+    )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/evaluation_cases/evaluation_cases_v1.jsonl"),
+        default=Path("data/evaluation_cases/v1"),
     )
     args = parser.parse_args()
-    manifest = write_cases(build_cases(args.dataset), args.output)
+    manifest = write_cases(
+        build_cases(
+            args.development_dataset,
+            args.holdout_dataset,
+            args.tool_contract,
+        ),
+        args.output,
+    )
     print(
         f"Built {manifest['case_count']} evaluation cases "
-        f"for dataset {manifest['dataset_id']}"
+        f"from development and holdout dataset snapshots"
     )
 
 

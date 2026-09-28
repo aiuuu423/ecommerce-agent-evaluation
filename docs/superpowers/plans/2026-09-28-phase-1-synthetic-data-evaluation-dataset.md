@@ -2244,8 +2244,33 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 ### Task 11: 生成并冻结 100 个 Evaluation Cases
 
 **Files:**
-- Create: `app/data/case_generator.py`
+- Create: `configs/data/synthetic_holdout_v1.yaml`
+- Create: `configs/evaluation/tool_contract_v1.yaml`
+- Create: `data/evaluation_cases/v1/cases.jsonl`
+- Create: `data/evaluation_cases/v1/manifest.json`
+- Modify: `app/data/case_generator.py`
+- Modify: `app/data/schemas.py`
 - Modify: `tests/test_case_generator.py`
+- Modify: `Makefile`
+
+**Task 11 冻结约束（2026-09-28 重构同步）：**
+
+- Development 与 Holdout 分别由 `synthetic_v1.yaml`、`synthetic_holdout_v1.yaml`
+  生成独立不可变数据快照；Case 必须按 Split 绑定对应 Dataset ID、版本和配置哈希。
+- Case 总量固定 100；每个业务任务固定 Development 14 / Holdout 6；每个能力固定
+  10。按 `business_task + primary_capability` 家族切分，禁止同义改写跨 Split。
+- 商品列表类问题固定显式要求 `Top-3`；`gold_metrics` 与
+  `gold_metric_evidence` 必须覆盖每条 Gold Evidence 中的全部指标。
+- `configs/evaluation/tool_contract_v1.yaml` 冻结工具路径和参数契约，但本 Task
+  不实现工具。GMV 路径包含指标计算，Next-week 路径不要求无 Gold 依据的
+  Marketing 调用，Adversarial 路径先查询商品并去重后续调用。
+- 难度由记录在 Case Metadata 的实际复杂度分数排序，再冻结为 Easy 30 /
+  Medium 40 / Hard 30；不得仅按能力标签直接映射。
+- Case 以 `data/evaluation_cases/v1/` 不可变目录原子发布并提交
+  `cases.jsonl + manifest.json`。Manifest 必须记录双数据集身份、Split 策略、
+  工具契约版本与哈希、数量分布及内容摘要哈希。
+- 本段约束取代下方早期示例中单 Dataset、单文件原地写入和未版本化工具路径的
+  设计；下方代码块仅保留为历史实施草案。
 
 - [ ] **Step 1: 写数量、覆盖和 Split 失败测试**
 
@@ -2634,7 +2659,13 @@ Run:
 
 ```bash
 python3 -m pytest tests/test_case_generator.py -v
-python3 -m app.data.case_generator --dataset data/synthetic/v1
+python3 -m app.data.generator \
+  --config configs/data/synthetic_holdout_v1.yaml
+python3 -m app.data.case_generator \
+  --development-dataset data/synthetic/v1 \
+  --holdout-dataset data/synthetic/holdout-v1 \
+  --tool-contract configs/evaluation/tool_contract_v1.yaml \
+  --output data/evaluation_cases/v1
 ```
 
 Expected:
@@ -2646,7 +2677,7 @@ Built 100 evaluation cases for dataset <dataset_id>
 再执行：
 
 ```bash
-python3 -c "import json; from pathlib import Path; p=Path('data/evaluation_cases/evaluation_cases_v1.manifest.json'); d=json.loads(p.read_text()); assert d['case_count']==100; assert d['split_counts']=={'development':70,'holdout':30}; print(d)"
+python3 -c "import json; from pathlib import Path; p=Path('data/evaluation_cases/v1/manifest.json'); d=json.loads(p.read_text()); assert d['case_count']==100; assert d['split_counts']=={'development':70,'holdout':30}; assert d['datasets']['development']['dataset_id'] != d['datasets']['holdout']['dataset_id']; print(d)"
 ```
 
 Expected: 输出真实 Manifest；不包含任何 Agent 效果指标。
@@ -2654,8 +2685,12 @@ Expected: 输出真实 Manifest；不包含任何 Agent 效果指标。
 - [ ] **Step 7: 提交 Case 生成器**
 
 ```bash
-git add app/data/case_generator.py tests/test_case_generator.py
-git commit -m "feat(evaluation-data): generate balanced traceable case set"
+git add .gitignore Makefile PROJECT_STATUS.md app/data/case_generator.py \
+  app/data/schemas.py configs/data/synthetic_holdout_v1.yaml \
+  configs/evaluation/tool_contract_v1.yaml data/evaluation_cases/v1 \
+  docs/superpowers/plans/2026-09-28-phase-1-synthetic-data-evaluation-dataset.md \
+  tests/test_case_generator.py
+git commit -m "feat(evaluation-data): freeze isolated split case set"
 ```
 
 ---

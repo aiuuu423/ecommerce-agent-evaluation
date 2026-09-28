@@ -1,0 +1,29 @@
+contract_version: "1.0"
+tools:
+  query_product:
+    required_parameters: [product_ids]
+  query_sales:
+    required_parameters:
+      - start_date
+      - end_date
+      - comparison_start_date
+      - comparison_end_date
+      - product_ids
+      - include_refunds
+  query_traffic:
+    required_parameters:
+      - start_date
+      - end_date
+      - comparison_start_date
+      - comparison_end_date
+      - product_ids
+      - include_missing
+  calculate_metrics:
+    required_parameters: [metrics, group_by]
+paths:
+  gmv_diagnosis: [query_sales, calculate_metrics]
+  product_anomaly: [query_product, query_sales, query_traffic, calculate_metrics]
+  conversion_decline: [query_traffic, query_sales, calculate_metrics]
+  products_to_watch: [query_sales, query_traffic, calculate_metrics]
+  next_week_priority: [query_sales, query_traffic, calculate_metrics]
+adversarial_prefix: [query_product]

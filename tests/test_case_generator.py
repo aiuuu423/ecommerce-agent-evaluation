@@ -32,10 +32,30 @@ REQUIRED_SUCCESS_CRITERIA = {
 }
 
 
+def build_test_case_set(
+    tmp_path: Path,
+) -> tuple[list[EvaluationCase], dict[str, object], dict[str, object]]:
+    development_dir = tmp_path / "development-v1"
+    holdout_dir = tmp_path / "holdout-v1"
+    development_manifest = build_snapshot(
+        "configs/data/synthetic_v1.yaml", development_dir
+    )
+    holdout_manifest = build_snapshot(
+        "configs/data/synthetic_holdout_v1.yaml", holdout_dir
+    )
+    return (
+        build_cases(development_dir, holdout_dir),
+        development_manifest,
+        holdout_manifest,
+    )
+
+
 def valid_case() -> dict[str, object]:
     return {
         "case_id": "CASE_001",
-        "case_version": "1.0",
+        "case_version": "1.1",
+        "tool_contract_version": "1.0",
+        "tool_contract_sha256": "b" * 64,
         "dataset_version": "v1",
         "dataset_id": "0123456789abcdef",
         "generator_config_hash": "a" * 64,
@@ -504,10 +524,7 @@ def test_nested_model_forbids_undeclared_fields_without_false_positive() -> None
 
 
 def test_builds_exact_balanced_traceable_case_set(tmp_path: Path) -> None:
-    dataset_dir = tmp_path / "v1"
-    manifest = build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
-
-    cases = build_cases(dataset_dir)
+    cases, development_manifest, holdout_manifest = build_test_case_set(tmp_path)
 
     assert len(cases) == 100
     assert [case.case_id for case in cases] == [
@@ -555,21 +572,23 @@ def test_builds_exact_balanced_traceable_case_set(tmp_path: Path) -> None:
         task: Counter({"development": 7, "holdout": 3})
         for task in BusinessTask
     }
-    assert all(case.dataset_id == manifest["dataset_id"] for case in cases)
-    assert all(case.dataset_version == manifest["dataset_version"] for case in cases)
-    assert all(
-        case.generator_config_hash == manifest["config_sha256"] for case in cases
-    )
+    expected_manifests = {
+        "development": development_manifest,
+        "holdout": holdout_manifest,
+    }
+    for case in cases:
+        manifest = expected_manifests[case.split]
+        assert case.dataset_id == manifest["dataset_id"]
+        assert case.dataset_version == manifest["dataset_version"]
+        assert case.generator_config_hash == manifest["config_sha256"]
+    assert development_manifest["dataset_id"] != holdout_manifest["dataset_id"]
 
 
 def test_cases_bind_stable_evidence_metrics_and_capability_semantics(
     tmp_path: Path,
 ) -> None:
-    dataset_dir = tmp_path / "v1"
-    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
-
-    first = build_cases(dataset_dir)
-    second = build_cases(dataset_dir)
+    first, _, _ = build_test_case_set(tmp_path)
+    second, _, _ = build_test_case_set(tmp_path)
 
     assert [case.model_dump(mode="json") for case in first] == [
         case.model_dump(mode="json") for case in second
@@ -650,9 +669,7 @@ def test_cases_bind_stable_evidence_metrics_and_capability_semantics(
 
 
 def test_paraphrase_variants_cannot_leak_across_splits(tmp_path: Path) -> None:
-    dataset_dir = tmp_path / "v1"
-    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
-    cases = build_cases(dataset_dir)
+    cases, _, _ = build_test_case_set(tmp_path)
 
     families: dict[tuple[BusinessTask, Capability], list[EvaluationCase]] = {}
     for case in cases:
@@ -670,9 +687,7 @@ def test_paraphrase_variants_cannot_leak_across_splits(tmp_path: Path) -> None:
 def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
     tmp_path: Path,
 ) -> None:
-    dataset_dir = tmp_path / "v1"
-    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
-    cases = build_cases(dataset_dir)
+    cases, _, _ = build_test_case_set(tmp_path)
 
     required_parameters = {
         "query_product": {"product_ids"},
@@ -706,15 +721,6 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
         for call in case.expected_tool_calls:
             assert set(call.parameters) == required_parameters[call.name]
 
-    products = set(
-        __import__("pandas").read_parquet(dataset_dir / "products.parquet")["product_id"]
-    )
-    gold = build_gold_bundle(dataset_dir)
-    product_gold_union = {
-        row["product_id"]
-        for task in PRODUCT_LEVEL_GOLD_TASKS
-        for row in gold["tasks"][task]["evidence"]
-    }
     adversarial = [
         case
         for case in cases
@@ -722,6 +728,20 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
     ]
     assert len(adversarial) == 10
     for case in adversarial:
+        dataset_dir = tmp_path / (
+            "development-v1" if case.split == "development" else "holdout-v1"
+        )
+        products = set(
+            __import__("pandas").read_parquet(dataset_dir / "products.parquet")[
+                "product_id"
+            ]
+        )
+        gold = build_gold_bundle(dataset_dir)
+        product_gold_union = {
+            row["product_id"]
+            for task in PRODUCT_LEVEL_GOLD_TASKS
+            for row in gold["tasks"][task]["evidence"]
+        }
         distractor = case.metadata["distractor_product_id"]
         assert distractor in products
         assert distractor not in product_gold_union
@@ -729,6 +749,82 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
         assert case.metadata["distractor_assertion_supported"] is False
         assert f"{distractor}是唯一主因的断言为假" in case.reference_answer
         assert "P999" not in case.user_input
+
+
+def test_list_cases_are_explicit_top_k_and_every_evidence_metric_is_scorable(
+    tmp_path: Path,
+) -> None:
+    cases, _, _ = build_test_case_set(tmp_path)
+
+    list_tasks = {
+        BusinessTask.PRODUCT_ANOMALY,
+        BusinessTask.CONVERSION_DECLINE,
+        BusinessTask.PRODUCTS_TO_WATCH,
+        BusinessTask.NEXT_WEEK_PRIORITY,
+    }
+    for case in cases:
+        if (
+            case.business_task in list_tasks
+            and case.primary_capability is not Capability.DATA_INSUFFICIENCY
+        ):
+            assert "Top-3" in case.user_input
+            assert case.metadata["top_k"] == 3
+            assert len(case.gold_evidence) == 3
+        evidence_metrics = {
+            metric
+            for evidence in case.gold_evidence
+            for metric in evidence.metrics
+        }
+        assert set(case.gold_metrics) == evidence_metrics
+        assert set(case.gold_metric_evidence) == evidence_metrics
+
+
+def test_versioned_tool_contract_fixes_gmv_next_week_and_adversarial_paths(
+    tmp_path: Path,
+) -> None:
+    cases, _, _ = build_test_case_set(tmp_path)
+
+    for case in cases:
+        path = [call.name for call in case.expected_tool_calls]
+        assert case.tool_contract_version == "1.0"
+        assert len(case.tool_contract_sha256) == 64
+        if case.primary_capability is Capability.DATA_INSUFFICIENCY:
+            continue
+        if case.business_task is BusinessTask.GMV_DIAGNOSIS:
+            expected = ["query_sales", "calculate_metrics"]
+        elif case.business_task is BusinessTask.NEXT_WEEK_PRIORITY:
+            expected = ["query_sales", "query_traffic", "calculate_metrics"]
+        else:
+            expected = None
+        if case.primary_capability is Capability.ADVERSARIAL_DISTRACTOR:
+            assert path[0] == "query_product"
+            assert len(path) == len(set(path))
+            if expected is not None:
+                expected = list(dict.fromkeys(["query_product", *expected]))
+        if expected is not None:
+            assert path == expected
+
+
+def test_difficulty_is_ranked_by_recorded_complexity_with_frozen_distribution(
+    tmp_path: Path,
+) -> None:
+    cases, _, _ = build_test_case_set(tmp_path)
+    bands = {
+        difficulty: [
+            case.metadata["complexity_score"]
+            for case in cases
+            if case.difficulty == difficulty
+        ]
+        for difficulty in ("easy", "medium", "hard")
+    }
+
+    assert max(bands["easy"]) <= min(bands["medium"])
+    assert max(bands["medium"]) <= min(bands["hard"])
+    assert {difficulty: len(scores) for difficulty, scores in bands.items()} == {
+        "easy": 30,
+        "medium": 40,
+        "hard": 30,
+    }
 
 
 def test_distractor_selection_changes_when_its_false_assertion_becomes_gold(
@@ -767,9 +863,7 @@ def test_distractor_selection_changes_when_its_false_assertion_becomes_gold(
 
 
 def test_every_gold_metric_is_reachable_from_expected_tool_path(tmp_path: Path) -> None:
-    dataset_dir = tmp_path / "v1"
-    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
-    cases = build_cases(dataset_dir)
+    cases, _, _ = build_test_case_set(tmp_path)
     sales_metrics = {
         "current_gmv",
         "previous_gmv",
@@ -811,25 +905,32 @@ def test_every_gold_metric_is_reachable_from_expected_tool_path(tmp_path: Path) 
 def test_jsonl_and_manifest_are_reproducible_and_do_not_leak_config(
     tmp_path: Path,
 ) -> None:
-    dataset_dir = tmp_path / "v1"
-    build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
-    cases = build_cases(dataset_dir)
-    first_path = tmp_path / "first.jsonl"
-    second_path = tmp_path / "second.jsonl"
+    cases, development_manifest, holdout_manifest = build_test_case_set(tmp_path)
+    first_path = tmp_path / "first"
+    second_path = tmp_path / "second"
 
     first_manifest = write_cases(cases, first_path)
-    second_manifest = write_cases(build_cases(dataset_dir), second_path)
+    second_manifest = write_cases(cases, second_path)
 
-    assert first_path.read_bytes() == second_path.read_bytes()
+    assert (first_path / "cases.jsonl").read_bytes() == (
+        second_path / "cases.jsonl"
+    ).read_bytes()
     assert first_manifest == second_manifest
     assert first_manifest["case_count"] == 100
     assert first_manifest["split_counts"] == {"development": 70, "holdout": 30}
+    assert first_manifest["datasets"]["development"]["dataset_id"] == (
+        development_manifest["dataset_id"]
+    )
+    assert first_manifest["datasets"]["holdout"]["dataset_id"] == (
+        holdout_manifest["dataset_id"]
+    )
+    assert first_manifest["split_strategy"]["cross_split_dataset_isolation"] is True
     assert first_manifest["jsonl_sha256"]
     assert first_manifest["case_set_id"]
     assert json.loads(
-        first_path.with_suffix(".manifest.json").read_text(encoding="utf-8")
+        (first_path / "manifest.json").read_text(encoding="utf-8")
     ) == first_manifest
-    serialized = first_path.read_text(encoding="utf-8")
+    serialized = (first_path / "cases.jsonl").read_text(encoding="utf-8")
     for forbidden in (
         "anomaly_id",
         "multiplier",
@@ -843,3 +944,16 @@ def test_jsonl_and_manifest_are_reproducible_and_do_not_leak_config(
         "A07",
     ):
         assert forbidden not in serialized
+
+
+def test_case_snapshot_is_an_atomic_immutable_directory(tmp_path: Path) -> None:
+    cases, _, _ = build_test_case_set(tmp_path)
+    output = tmp_path / "case-snapshot-v1"
+
+    manifest = write_cases(cases, output)
+    assert write_cases(cases, output) == manifest
+    (output / "cases.jsonl").write_text("tampered\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="immutable"):
+        write_cases(cases, output)
+    assert not list(tmp_path.glob(".case-snapshot-v1.tmp-*"))

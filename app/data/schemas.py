@@ -231,7 +231,9 @@ class GoldEvidence(EvaluationModel):
 
 class EvaluationCase(EvaluationModel):
     case_id: str = Field(pattern=r"^CASE_[0-9]{3}$")
-    case_version: str = Field(min_length=1)
+    case_version: Literal["1.1"]
+    tool_contract_version: str = Field(min_length=1)
+    tool_contract_sha256: Sha256Hex
     dataset_version: str = Field(min_length=1)
     dataset_id: str = Field(pattern=r"^[0-9a-f]{16}$")
     generator_config_hash: Sha256Hex
