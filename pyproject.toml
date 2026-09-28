@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecommerce-agent-evaluation"
+version = "0.1.0"
+description = "Synthetic e-commerce Agent evaluation and error analysis"
+requires-python = ">=3.11"
+dependencies = [
+  "duckdb>=1.1,<2",
+  "numpy>=2.0,<3",
+  "pandas>=2.2,<3",
+  "pyarrow>=17,<20",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.5,<3",
+  "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "nbformat>=5.10,<6",
+  "pytest>=8.3,<9",
+  "ruff>=0.7,<1",
+]
+
+[project.scripts]
+build-phase1-data = "app.data.generator:main"
+build-evaluation-cases = "app.data.case_generator:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
