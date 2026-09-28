@@ -4,9 +4,16 @@
 
 **Goal:** 构建可复现、明确标记为 Synthetic 的五表电商数据快照，并从冻结数据与独立 Gold 查询程序化生成首批 100 个 Evaluation Cases。
 
-**Architecture:** Phase 1 分为两个顺序里程碑。里程碑 A 使用版本化 YAML 配置和固定 Seed 生成 Pandas DataFrame，经过 Pydantic Schema、业务不变量与独立指标检查后写入 Parquet 和 Manifest；里程碑 B 使用 DuckDB 只读查询冻结快照，生成带 Gold Evidence、成功门控和开发集/保留集标签的 JSONL Cases。业务生成逻辑、Gold SQL 和 Case 模板相互隔离，降低共享错误导致的“自证正确”风险。
+**Architecture:** Phase 1 分为两个顺序里程碑。里程碑 A 使用独立的 Development/Holdout
+版本化 YAML 配置和固定 Seed 生成 Pandas DataFrame，经过 Pydantic Schema、业务不变量与
+独立指标检查后，以跨平台文件锁和不可变目录原子发布 Parquet 与 Manifest；里程碑 B 使用
+DuckDB 只读查询两套冻结快照，生成带 Gold Evidence、成功门控和开发集/保留集标签的
+JSONL Cases。统一入口 `build-phase1 = app.data.phase1:main` 从配置中的
+`dataset_version` 动态推导两套数据目录和 Cases 目录。业务生成逻辑、Gold SQL 和 Case
+模板相互隔离，降低共享错误导致的“自证正确”风险。
 
-**Tech Stack:** Python 3.11+、Pandas、NumPy、Pydantic v2、DuckDB、PyArrow、PyYAML、Pytest、Ruff、Jupyter/nbformat
+**Tech Stack:** Python 3.11+、Pandas、NumPy、Pydantic v2、DuckDB、PyArrow、PyYAML、
+FileLock、Pytest、Ruff、Jupyter/nbformat
 
 ---
 
@@ -58,19 +65,27 @@ app/data/generator.py
 app/data/gold.py
 app/data/manifest.py
 app/data/metrics.py
+app/data/phase1.py
 app/data/schemas.py
 app/data/validation.py
+configs/data/synthetic_holdout_v1.yaml
 configs/data/synthetic_v1.yaml
+configs/evaluation/tool_contract_v1.yaml
 data/evaluation_cases/.gitkeep
+data/evaluation_cases/v1/cases.jsonl
+data/evaluation_cases/v1/manifest.json
 data/results/.gitkeep
 data/synthetic/.gitkeep
+data/synthetic/phase1_sha256_baseline.json
 notebooks/01_data_exploration.ipynb
+requirements.lock
 sql/gold/gmv_change.sql
 sql/gold/product_anomalies.sql
 sql/gold/conversion_decline.sql
 sql/gold/products_to_watch.sql
 sql/gold/next_week_priorities.sql
 tests/conftest.py
+tests/fixtures/hand_checked_gold_snapshot.json
 tests/fixtures/hand_checked_metrics.json
 tests/test_case_generator.py
 tests/test_data_config.py
@@ -81,6 +96,7 @@ tests/test_data_validation.py
 tests/test_database.py
 tests/test_gold.py
 tests/test_notebook.py
+tests/test_phase1.py
 tests/test_project_setup.py
 ```
 
@@ -90,17 +106,48 @@ tests/test_project_setup.py
 PROJECT_STATUS.md
 ```
 
-### 生成但不提交
+### 动态生成但不提交
 
 ```text
-data/synthetic/v1/*.parquet
-data/synthetic/v1/manifest.json
-data/synthetic/v1/data_quality_report.json
-data/evaluation_cases/evaluation_cases_v1.jsonl
-data/evaluation_cases/evaluation_cases_v1.manifest.json
+data/synthetic/{development_dataset_version}/*.parquet
+data/synthetic/{development_dataset_version}/manifest.json
+data/synthetic/{development_dataset_version}/data_quality_report.json
+data/synthetic/{holdout_dataset_version}/*.parquet
+data/synthetic/{holdout_dataset_version}/manifest.json
+data/synthetic/{holdout_dataset_version}/data_quality_report.json
 ```
 
-生成产物不作为手写源文件提交；它们必须能由配置和代码重新构建。正式发布时是否附带一份小型快照，在 Phase 9 的发布策略中决定。
+两套数据快照目录由各自配置的 `dataset_version` 动态推导，默认分别为
+`data/synthetic/v1/` 与 `data/synthetic/holdout-v1/`。数据快照不作为手写源文件提交，
+必须能由配置和代码重新构建。默认 Cases 发布到由 Development 版本推导的
+`data/evaluation_cases/v1/`，其中冻结的 `cases.jsonl` 与 `manifest.json` 随仓库提交；
+非默认版本仍写入相应的动态版本目录。正式发布时是否附带数据快照，在 Phase 9 的发布
+策略中决定。
+
+## 实施偏差与最终决策
+
+本节记录计划执行期间经测试与审查后形成的最终实现；下述决策优先于后续任务中的早期
+增量示例。
+
+- **单一公开 CLI：** 项目元数据只保留
+  `build-phase1 = app.data.phase1:main`。`make phase1-data`、`make phase1-cases` 和
+  `make phase1` 均调用 `python -m app.data.phase1`，通过 `--stage data|cases|all`
+  选择阶段；生成器和 Case 生成器仅作为内部 Python 模块使用。
+- **动态版本目录：** 统一 CLI 从 Development 与 Holdout 配置各自的
+  `dataset_version` 推导 `data/synthetic/{version}/`，并从 Development 版本推导
+  `data/evaluation_cases/{development-version}/`。非 `v1` 配置已有端到端测试覆盖。
+- **冻结 Cases：** 默认配置对应的 100 个 Cases 固定提交在
+  `data/evaluation_cases/v1/cases.jsonl` 与 `manifest.json`，且目录不可变；Development
+  与 Holdout 分别绑定独立数据快照。
+- **跨平台并发保护：** 数据快照与 Cases 发布统一使用锁定依赖 `filelock`，锁文件位于
+  目标目录同级，支持 Linux、macOS 与 Windows；发布使用同文件系统内的暂存目录和
+  `os.rename`。
+- **可复现哈希基线：** `data/synthetic/phase1_sha256_baseline.json` 固定记录 16 个
+  Phase 1 产物的相对路径、SHA-256、两个 Dataset ID 与 Case Set ID。端到端测试在干净
+  输出根目录重建后逐文件比较该基线。
+- **当前清理与验证：** 清理时只删除动态生成的数据目录、锁文件与暂存目录，不删除已
+  提交的 `data/evaluation_cases/v1/`；验证统一通过可覆盖的 `PHASE1_OUTPUT_ROOT`
+  在临时目录运行，避免修改冻结产物。
 
 ## 固定数据契约
 
@@ -216,6 +263,7 @@ description = "Synthetic e-commerce Agent evaluation and error analysis"
 requires-python = ">=3.11"
 dependencies = [
   "duckdb>=1.1,<2",
+  "filelock>=3.16,<4",
   "numpy>=2.0,<3",
   "pandas>=2.2,<3",
   "pyarrow>=17,<20",
@@ -232,8 +280,7 @@ dev = [
 ]
 
 [project.scripts]
-build-phase1-data = "app.data.generator:main"
-build-evaluation-cases = "app.data.case_generator:main"
+build-phase1 = "app.data.phase1:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -279,24 +326,54 @@ LLM_MODEL=
 `Makefile`：
 
 ```makefile
-.PHONY: install test lint phase1-data phase1-cases phase1
+PYTHON ?= python3
+DEVELOPMENT_CONFIG ?= configs/data/synthetic_v1.yaml
+HOLDOUT_CONFIG ?= configs/data/synthetic_holdout_v1.yaml
+TOOL_CONTRACT ?= configs/evaluation/tool_contract_v1.yaml
+PHASE1_OUTPUT_ROOT ?= data
 
-install:
-	python3 -m pip install -e ".[dev]"
+.PHONY: check-python install test lint phase1-data phase1-cases phase1
 
-test:
-	python3 -m pytest
+check-python:
+	@command -v "$(PYTHON)" >/dev/null 2>&1 || { \
+		echo "error: PYTHON='$(PYTHON)' was not found; set PYTHON to a Python 3.11+ executable"; \
+		exit 1; \
+	}
+	@$(PYTHON) -c 'import sys; required = (3, 11); current = sys.version_info[:2]; raise SystemExit(0 if current >= required else "error: Python 3.11+ is required, but PYTHON=$(PYTHON) resolved to %s.%s" % current)'
 
-lint:
-	python3 -m ruff check app tests
+install: check-python
+	$(PYTHON) -m pip install --requirement requirements.lock
+	$(PYTHON) -m pip install --no-deps --editable .
 
-phase1-data:
-	python3 -m app.data.generator --config configs/data/synthetic_v1.yaml
+test: check-python
+	$(PYTHON) -m pytest
 
-phase1-cases:
-	python3 -m app.data.case_generator --dataset data/synthetic/v1
+lint: check-python
+	$(PYTHON) -m ruff check app tests notebooks
 
-phase1: phase1-data phase1-cases
+phase1-data: check-python
+	$(PYTHON) -m app.data.phase1 \
+		--development-config "$(DEVELOPMENT_CONFIG)" \
+		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--tool-contract "$(TOOL_CONTRACT)" \
+		--output-root "$(PHASE1_OUTPUT_ROOT)" \
+		--stage data
+
+phase1-cases: check-python
+	$(PYTHON) -m app.data.phase1 \
+		--development-config "$(DEVELOPMENT_CONFIG)" \
+		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--tool-contract "$(TOOL_CONTRACT)" \
+		--output-root "$(PHASE1_OUTPUT_ROOT)" \
+		--stage cases
+
+phase1: check-python
+	$(PYTHON) -m app.data.phase1 \
+		--development-config "$(DEVELOPMENT_CONFIG)" \
+		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--tool-contract "$(TOOL_CONTRACT)" \
+		--output-root "$(PHASE1_OUTPUT_ROOT)" \
+		--stage all
 ```
 
 `README.md` 先写入最小真实状态：
@@ -1413,19 +1490,7 @@ def build_snapshot(config_path: Path | str, output_dir: Path | str) -> dict:
     return manifest
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
-    config = load_data_config(args.config)
-    output = args.output or Path("data/synthetic") / config.dataset_version
-    manifest = build_snapshot(args.config, output)
-    print(f"Built {manifest['source_label']} snapshot {manifest['dataset_id']}")
-
-
-if __name__ == "__main__":
-    main()
+# `build_snapshot` 是内部 Python API；公开命令由 app.data.phase1:main 统一编排。
 ```
 
 - [x] **Step 5: 运行快照测试与真实构建**
@@ -1434,19 +1499,19 @@ Run:
 
 ```bash
 python3 -m pytest tests/test_data_manifest.py -v
-python3 -m app.data.generator --config configs/data/synthetic_v1.yaml
+make PYTHON=python3 phase1-data
 ```
 
 Expected:
 
 ```text
-Built Synthetic E-commerce Data snapshot <16-character dataset_id>
+Built Phase 1 data artifacts: development=e1e81533c25e03e5, holdout=c17d4926cfa7cb26
 ```
 
 随后检查：
 
 ```bash
-python3 -c "import json; from pathlib import Path; p=Path('data/synthetic/v1/manifest.json'); d=json.loads(p.read_text()); assert d['source_label']=='Synthetic E-commerce Data'; print(d['dataset_id'], {k:v['rows'] for k,v in d['tables'].items()})"
+python3 -c "import json; from pathlib import Path; import yaml; c=yaml.safe_load(Path('configs/data/synthetic_v1.yaml').read_text()); p=Path('data/synthetic')/c['dataset_version']/'manifest.json'; d=json.loads(p.read_text()); assert d['source_label']=='Synthetic E-commerce Data'; print(d['dataset_id'], {k:v['rows'] for k,v in d['tables'].items()})"
 ```
 
 Expected: 输出 Dataset ID 与五张表的非零行数，不输出随机效果指标。
@@ -1743,7 +1808,7 @@ class EvaluationCase(StrictModel):
 
 `generator_config_hash` 使用 Dataset Manifest 的 `config_sha256`，不得由 Case
 生成器重新计算或接受调用方覆盖。Evidence ID 统一使用稳定的任务级格式
-`EV_<BUSINESS_TASK>_<ROW_NUMBER>`；编号来自对应 Gold SQL 的确定性排序，与
+`EV_{BUSINESS_TASK}_{ROW_NUMBER}`；编号来自对应 Gold SQL 的确定性排序，与
 `case_id`、Case Split 和 Case 生成顺序无关。
 
 - [x] **Step 4: 运行测试并提交**
@@ -2203,7 +2268,7 @@ def build_gold_bundle(dataset_dir: Path) -> dict:
     }
 ```
 
-Evidence ID 必须固定为 `EV_<BUSINESS_TASK>_<ROW_NUMBER>`。每份 Gold SQL
+Evidence ID 必须固定为 `EV_{BUSINESS_TASK}_{ROW_NUMBER}`。每份 Gold SQL
 必须以稳定键显式排序后再编号；同一 Dataset Manifest 重复构建 Gold Bundle
 时，Evidence ID 不得随 Case 数量、Split 或遍历顺序变化。
 
@@ -2617,24 +2682,8 @@ def write_cases(cases: list[EvaluationCase], output_path: Path) -> dict:
     return payload
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("data/evaluation_cases/evaluation_cases_v1.jsonl"),
-    )
-    args = parser.parse_args()
-    manifest = write_cases(build_cases(args.dataset), args.output)
-    print(
-        f\"Built {manifest['case_count']} evaluation cases \"
-        f\"for dataset {manifest['dataset_id']}\"
-    )
-
-
-if __name__ == "__main__":
-    main()
+# `write_cases` 接收不可变的版本目录并写入 `cases.jsonl` 与 `manifest.json`；
+# 公开命令由 app.data.phase1:main 统一编排 Development 与 Holdout。
 ```
 
 - [x] **Step 5: 增加防泄漏测试**
@@ -2659,19 +2708,18 @@ Run:
 
 ```bash
 python3 -m pytest tests/test_case_generator.py -v
-python3 -m app.data.generator \
-  --config configs/data/synthetic_holdout_v1.yaml
-python3 -m app.data.case_generator \
-  --development-dataset data/synthetic/v1 \
-  --holdout-dataset data/synthetic/holdout-v1 \
+python3 -m app.data.phase1 \
+  --development-config configs/data/synthetic_v1.yaml \
+  --holdout-config configs/data/synthetic_holdout_v1.yaml \
   --tool-contract configs/evaluation/tool_contract_v1.yaml \
-  --output data/evaluation_cases/v1
+  --output-root data \
+  --stage all
 ```
 
 Expected:
 
 ```text
-Built 100 evaluation cases for dataset <dataset_id>
+Built Phase 1 all artifacts: development=e1e81533c25e03e5, holdout=c17d4926cfa7cb26, cases=35d8734343a1492d
 ```
 
 再执行：
@@ -2830,24 +2878,47 @@ git commit -m "docs(data): add reproducible synthetic data exploration notebook"
 追加到 `tests/test_data_generation.py`：
 
 ```python
-from app.data.case_generator import build_cases, write_cases
-from app.data.generator import build_snapshot
+import json
+import subprocess
+import sys
+
 from app.data.manifest import file_sha256
 
 
-def test_phase1_outputs_are_reproducible(tmp_path) -> None:
-    first_dataset = tmp_path / "first" / "v1"
-    second_dataset = tmp_path / "second" / "v1"
-    first_manifest = build_snapshot("configs/data/synthetic_v1.yaml", first_dataset)
-    second_manifest = build_snapshot("configs/data/synthetic_v1.yaml", second_dataset)
-    assert first_manifest["dataset_id"] == second_manifest["dataset_id"]
+def test_phase1_clean_build_matches_committed_sha256_baseline(tmp_path) -> None:
+    output_root = tmp_path / "phase1"
+    completed = subprocess.run(
+        [
+            "make",
+            f"PYTHON={sys.executable}",
+            f"PHASE1_OUTPUT_ROOT={output_root}",
+            "phase1",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
-    first_cases = tmp_path / "first" / "cases.jsonl"
-    second_cases = tmp_path / "second" / "cases.jsonl"
-    first_case_manifest = write_cases(build_cases(first_dataset), first_cases)
-    second_case_manifest = write_cases(build_cases(second_dataset), second_cases)
-    assert first_case_manifest["case_set_id"] == second_case_manifest["case_set_id"]
-    assert file_sha256(first_cases) == file_sha256(second_cases)
+    baseline = json.loads(
+        (ROOT / "data/synthetic/phase1_sha256_baseline.json").read_text()
+    )
+    expected_hashes = {
+        item["path"]: item["sha256"] for item in baseline["artifacts"]
+    }
+    actual_hashes = {
+        path.relative_to(output_root).as_posix(): file_sha256(path)
+        for relative_directory in (
+            Path("synthetic/v1"),
+            Path("synthetic/holdout-v1"),
+            Path("evaluation_cases/v1"),
+        )
+        for path in (output_root / relative_directory).iterdir()
+        if path.is_file()
+    }
+    assert baseline["artifact_count"] == len(expected_hashes) == 16
+    assert actual_hashes == expected_hashes
 ```
 
 - [x] **Step 2: 增加 Gold 独立性测试**
@@ -2870,16 +2941,20 @@ def test_gold_sql_does_not_read_generator_config() -> None:
 Run:
 
 ```bash
-python3 -c "from pathlib import Path; import shutil; shutil.rmtree(Path('data/synthetic/v1'), ignore_errors=True); [p.unlink(missing_ok=True) for p in [Path('data/evaluation_cases/evaluation_cases_v1.jsonl'), Path('data/evaluation_cases/evaluation_cases_v1.manifest.json')]]"
-make phase1
+PHASE1_OUTPUT_ROOT="$(mktemp -d)"
+trap 'rm -rf "$PHASE1_OUTPUT_ROOT"' EXIT
+make PYTHON=python3 PHASE1_OUTPUT_ROOT="$PHASE1_OUTPUT_ROOT" phase1
+python3 -m pytest tests/test_data_generation.py::test_phase1_clean_build_matches_committed_sha256_baseline
 python3 -m pytest
-python3 -m ruff check app tests
+python3 -m ruff check app tests notebooks
 git diff --check
 ```
 
 Expected:
 
-- `make phase1` 成功生成五张 Parquet、Dataset Manifest、质量报告、100 Cases 和 Case Manifest。
+- `make phase1` 在干净输出根目录成功生成两套五张 Parquet、Dataset Manifest、质量报告、
+  100 Cases 和 Case Manifest。
+- 干净构建的 16 个文件与 `data/synthetic/phase1_sha256_baseline.json` 逐字节一致。
 - 全部测试 PASS。
 - Ruff 无错误。
 - Git whitespace 检查无错误。
@@ -2964,7 +3039,13 @@ Expected:
 - [x] Development/Holdout 分布为 70/30。
 - [x] Case 不泄漏异常配置。
 - [x] Case 与 Dataset ID 绑定。
+- [x] `build-phase1` 是唯一公开 console script。
+- [x] 三个 Makefile Phase 1 目标均委托 `app.data.phase1` 单一 CLI。
+- [x] Development、Holdout 与 Cases 目录由配置版本动态推导。
+- [x] 默认 Cases 冻结在 `data/evaluation_cases/v1/` 并随仓库提交。
+- [x] 数据和 Case 使用跨平台 `filelock` 并发保护。
 - [x] 数据和 Case 可重复生成。
+- [x] 干净构建的 16 个产物匹配提交的 SHA-256 基线。
 - [x] Notebook 明确说明 Synthetic 与局限性。
 - [x] 完整 Pytest 与 Ruff 检查通过。
 - [x] `PROJECT_STATUS.md` 记录实际结果。
