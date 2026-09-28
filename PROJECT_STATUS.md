@@ -8,8 +8,8 @@
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
 100 个冻结 Evaluation Cases；三个 Makefile Phase 1 目标统一委托单一 CLI，并从配置的
-`dataset_version` 动态推导输出目录。快照身份绑定生成器源码，跨平台文件锁与只读数据
-探索 Notebook 已完成真实执行验证。
+`dataset_version` 动态推导输出目录；项目元数据仅公开 `build-phase1` 入口。快照身份绑定
+生成器源码，跨平台文件锁与只读数据探索 Notebook 已完成真实执行验证。
 
 ## Completed
 
@@ -34,6 +34,8 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
 - [x] 建立只读数据探索 Notebook，并隔离 Holdout 查询句柄。
 - [x] 建立统一 Phase 1 CLI 与可覆盖输出根目录的 Makefile 入口。
+- [x] 仅公开 `build-phase1 = app.data.phase1:main` console script，并验证三个 Makefile
+  目标继续委托统一 CLI。
 - [x] 使用锁定版本的 `filelock` 支持 Linux、macOS 与 Windows 并发发布。
 - [x] 使用非 `v1` 配置端到端验证动态输出目录。
 - [x] 验证干净重建的 16 个产物文件与冻结版本逐字节一致。
@@ -95,6 +97,7 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
   `4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea`。
 - Cases：`100`，Development/Holdout Split 为 `70/30`。
 - Gold 独立性与端到端复现定向测试：`2 passed`。
+- Console script 唯一性与 Makefile 统一 CLI 委托定向测试：`5 passed`。
 - 全量测试：`357 passed`。
 - Notebook 结构与真实执行测试：`6 passed`（项目根目录与 `notebooks/` 两种工作目录）。
 - `python -m ruff check app tests notebooks`：`All checks passed!`。
