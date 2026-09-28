@@ -1,20 +1,29 @@
 import argparse
+import fcntl
+import json
 import os
 import shutil
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import TypeVar
-from uuid import uuid4
+from typing import Any, TypeVar
 
 import numpy as np
 import pandas as pd
+import pyarrow
 
 from app.data.config import SyntheticDataConfig, load_data_config_with_sha256
-from app.data.manifest import contained_path, file_sha256, manifest_id, write_json
+from app.data.manifest import (
+    contained_path,
+    dataset_id_for_tables,
+    file_sha256,
+    logical_table_sha256,
+    write_json,
+)
 from app.data.schemas import (
     CustomerRow,
     MarketingRow,
@@ -37,6 +46,8 @@ MAX_CLICK_THROUGH_RATE = 0.22
 MAX_CONVERSION_RATE = 0.25
 MAX_REFUND_PROBABILITY = 0.65
 MAX_ORDER_SEQUENCE = 999_999
+PARQUET_ENGINE = "pyarrow"
+PARQUET_COMPRESSION = "snappy"
 DimensionValue = TypeVar("DimensionValue")
 
 
@@ -406,23 +417,87 @@ def generate_dataset(config: SyntheticDataConfig) -> dict[str, pd.DataFrame]:
 
 
 def _publish_snapshot(staging_dir: Path, output_dir: Path) -> None:
-    if output_dir.exists() and not output_dir.is_dir():
-        raise ValueError(f"snapshot output is not a directory: {output_dir}")
-
-    backup_dir: Path | None = None
     if output_dir.exists():
-        backup_dir = output_dir.parent / f".{output_dir.name}.backup-{uuid4().hex}"
-        os.replace(output_dir, backup_dir)
+        raise FileExistsError(f"snapshot output already exists: {output_dir}")
+    os.rename(staging_dir, output_dir)
 
+
+@contextmanager
+def _snapshot_lock(output_dir: Path) -> Iterator[None]:
+    lock_path = output_dir.parent / f".{output_dir.name}.lock"
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _logical_table_manifest(
+    tables: dict[str, pd.DataFrame],
+) -> dict[str, dict[str, object]]:
+    return {
+        name: {
+            "file": f"{name}.parquet",
+            "rows": len(tables[name]),
+            "logical_sha256": logical_table_sha256(tables[name]),
+        }
+        for name in TABLE_NAMES
+    }
+
+
+def _load_existing_snapshot(
+    output: Path,
+    expected_dataset_id: str,
+    expected_tables: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    if output.is_symlink() or not output.is_dir():
+        raise ValueError(f"snapshot output is not an immutable directory: {output}")
+
+    manifest_path = contained_path(output, "manifest.json")
     try:
-        os.replace(staging_dir, output_dir)
-    except BaseException:
-        if backup_dir is not None:
-            os.replace(backup_dir, output_dir)
-        raise
-    else:
-        if backup_dir is not None:
-            shutil.rmtree(backup_dir)
+        manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+        existing_dataset_id = manifest["dataset_id"]
+        table_manifest = manifest["tables"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"existing snapshot manifest is invalid: {output}") from exc
+
+    if not isinstance(table_manifest, dict) or set(table_manifest) != set(TABLE_NAMES):
+        raise ValueError(f"existing snapshot manifest is invalid: {output}")
+    if existing_dataset_id != expected_dataset_id:
+        raise ValueError(
+            "snapshot version directory is immutable and contains a different "
+            f"dataset identity: {output}"
+        )
+    for name in TABLE_NAMES:
+        try:
+            metadata = table_manifest[name]
+            table_path = contained_path(output, metadata["file"])
+            expected_file_sha = metadata["sha256"]
+            existing_logical_metadata = {
+                "file": metadata["file"],
+                "rows": metadata["rows"],
+                "logical_sha256": metadata["logical_sha256"],
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"existing snapshot manifest is invalid: {output}") from exc
+        if not table_path.is_file() or file_sha256(table_path) != expected_file_sha:
+            raise ValueError(f"existing snapshot physical file hash mismatch: {table_path.name}")
+        if existing_logical_metadata != expected_tables[name]:
+            raise ValueError(
+                "snapshot version directory is immutable and contains a different "
+                f"dataset identity: {output}"
+            )
+
+    if not contained_path(output, "data_quality_report.json").is_file():
+        raise ValueError(f"existing snapshot is incomplete: {output}")
+    existing_tables = {
+        name: pd.read_parquet(contained_path(output, table_manifest[name]["file"]))
+        for name in TABLE_NAMES
+    }
+    if dataset_id_for_tables(existing_tables) != existing_dataset_id:
+        raise ValueError(f"existing snapshot logical identity mismatch: {output}")
+    return manifest
 
 
 def build_snapshot(
@@ -441,37 +516,55 @@ def build_snapshot(
         else Path("data/synthetic") / config.dataset_version
     ).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
-    ).resolve()
+    dataset_id = dataset_id_for_tables(tables)
+    logical_tables = _logical_table_manifest(tables)
+    writer = {
+        "pandas_version": pd.__version__,
+        "pyarrow_version": pyarrow.__version__,
+        "parquet_engine": PARQUET_ENGINE,
+        "compression": PARQUET_COMPRESSION,
+        "index": False,
+    }
 
-    try:
-        table_manifest: dict[str, dict[str, object]] = {}
-        for name in TABLE_NAMES:
-            table_path = contained_path(staging, f"{name}.parquet")
-            tables[name].to_parquet(table_path, index=False)
-            table_manifest[name] = {
-                "file": table_path.name,
-                "rows": len(tables[name]),
-                "sha256": file_sha256(table_path),
+    with _snapshot_lock(output):
+        if output.exists() or output.is_symlink():
+            return _load_existing_snapshot(output, dataset_id, logical_tables)
+
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
+        ).resolve()
+        try:
+            table_manifest: dict[str, dict[str, object]] = {}
+            for name in TABLE_NAMES:
+                table_path = contained_path(staging, f"{name}.parquet")
+                tables[name].to_parquet(
+                    table_path,
+                    index=False,
+                    engine=PARQUET_ENGINE,
+                    compression=PARQUET_COMPRESSION,
+                )
+                table_manifest[name] = {
+                    **logical_tables[name],
+                    "sha256": file_sha256(table_path),
+                }
+
+            manifest: dict[str, object] = {
+                "dataset_id": dataset_id,
+                "dataset_version": config.dataset_version,
+                "schema_version": config.schema_version,
+                "source_label": config.source_label,
+                "seed": config.seed,
+                "config_sha256": config_digest,
+                "writer": writer,
+                "tables": table_manifest,
             }
-
-        identity: dict[str, object] = {
-            "dataset_version": config.dataset_version,
-            "schema_version": config.schema_version,
-            "source_label": config.source_label,
-            "seed": config.seed,
-            "config_sha256": config_digest,
-            "tables": table_manifest,
-        }
-        manifest = {"dataset_id": manifest_id(identity), **identity}
-        write_json(contained_path(staging, "manifest.json"), manifest)
-        write_json(contained_path(staging, "data_quality_report.json"), quality)
-        _publish_snapshot(staging, output)
-    except BaseException:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
+            write_json(contained_path(staging, "manifest.json"), manifest)
+            write_json(contained_path(staging, "data_quality_report.json"), quality)
+            _publish_snapshot(staging, output)
+        except BaseException:
+            if staging.exists():
+                shutil.rmtree(staging)
+            raise
 
     return manifest
 
