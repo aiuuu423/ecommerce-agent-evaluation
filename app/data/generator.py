@@ -459,6 +459,9 @@ def _load_existing_snapshot(
         manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
         existing_dataset_id = manifest["dataset_id"]
         table_manifest = manifest["tables"]
+        quality_metadata = manifest["data_quality_report"]
+        quality_path = contained_path(output, quality_metadata["file"])
+        expected_quality_sha = quality_metadata["sha256"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError(f"existing snapshot manifest is invalid: {output}") from exc
 
@@ -489,8 +492,15 @@ def _load_existing_snapshot(
                 f"dataset identity: {output}"
             )
 
-    if not contained_path(output, "data_quality_report.json").is_file():
-        raise ValueError(f"existing snapshot is incomplete: {output}")
+    if not quality_path.is_file() or file_sha256(quality_path) != expected_quality_sha:
+        raise ValueError(f"existing snapshot quality report hash mismatch: {quality_path.name}")
+    try:
+        quality_report = json.loads(quality_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"existing snapshot quality report is invalid: {output}") from exc
+    if not isinstance(quality_report, dict) or quality_report.get("status") != "pass":
+        raise ValueError(f"existing snapshot quality report status is not pass: {output}")
+
     existing_tables = {
         name: pd.read_parquet(contained_path(output, table_manifest[name]["file"]))
         for name in TABLE_NAMES
@@ -548,6 +558,8 @@ def build_snapshot(
                     "sha256": file_sha256(table_path),
                 }
 
+            quality_path = contained_path(staging, "data_quality_report.json")
+            write_json(quality_path, quality)
             manifest: dict[str, object] = {
                 "dataset_id": dataset_id,
                 "dataset_version": config.dataset_version,
@@ -557,9 +569,12 @@ def build_snapshot(
                 "config_sha256": config_digest,
                 "writer": writer,
                 "tables": table_manifest,
+                "data_quality_report": {
+                    "file": "data_quality_report.json",
+                    "sha256": file_sha256(quality_path),
+                },
             }
             write_json(contained_path(staging, "manifest.json"), manifest)
-            write_json(contained_path(staging, "data_quality_report.json"), quality)
             _publish_snapshot(staging, output)
         except BaseException:
             if staging.exists():

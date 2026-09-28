@@ -67,6 +67,10 @@ def test_snapshot_writes_parquet_quality_report_and_stable_manifest(
         "compression": "snappy",
         "index": False,
     }
+    assert first["data_quality_report"] == {
+        "file": "data_quality_report.json",
+        "sha256": file_sha256(output / "data_quality_report.json"),
+    }
     assert set(first["tables"]) == TABLES
     for metadata in first["tables"].values():
         table_path = output / metadata["file"]
@@ -146,6 +150,39 @@ def test_existing_snapshot_with_same_identity_returns_without_rewriting(
     monkeypatch.setattr(pd.DataFrame, "to_parquet", fail_write)
 
     assert build_snapshot(small_config, output) == expected
+
+
+def test_existing_snapshot_rejects_tampered_quality_report_hash(
+    tmp_path: Path, small_config: Path
+) -> None:
+    output = tmp_path / "v1"
+    build_snapshot(small_config, output)
+    report_path = output / "data_quality_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["source_label"] = "tampered"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="quality report hash mismatch"):
+        build_snapshot(small_config, output)
+
+
+def test_existing_snapshot_rejects_non_passing_quality_report(
+    tmp_path: Path, small_config: Path
+) -> None:
+    output = tmp_path / "v1"
+    build_snapshot(small_config, output)
+    report_path = output / "data_quality_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["status"] = "fail"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["data_quality_report"]["sha256"] = file_sha256(report_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="quality report status is not pass"):
+        build_snapshot(small_config, output)
 
 
 def test_existing_snapshot_with_different_identity_is_rejected(
