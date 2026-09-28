@@ -38,6 +38,7 @@ def valid_case() -> dict[str, object]:
         ],
         "allowed_alternatives": [],
         "gold_metrics": {"gmv_change_rate": -0.12},
+        "gold_metric_evidence": {"gmv_change_rate": "EV_CASE_001_01"},
         "gold_evidence": [
             {
                 "evidence_id": "EV_CASE_001_01",
@@ -76,9 +77,20 @@ def test_business_task_and_capability_enums_have_the_frozen_taxonomy() -> None:
     }
 
 
-def test_component_models_preserve_tool_parameters_and_evidence_structure() -> None:
+def test_component_models_preserve_recursive_json_parameters_and_evidence_structure() -> None:
     tool_call = ExpectedToolCall.model_validate(
-        {"name": "query_sales", "parameters": {"window_days": 30}}
+        {
+            "name": "query_sales",
+            "parameters": {
+                "window_days": 30,
+                "filters": {
+                    "product_ids": ["P001", "P002"],
+                    "include_refunds": False,
+                    "minimum_gmv": 10.5,
+                    "optional": None,
+                },
+            },
+        }
     )
     evidence = GoldEvidence.model_validate(
         {
@@ -89,7 +101,15 @@ def test_component_models_preserve_tool_parameters_and_evidence_structure() -> N
         }
     )
 
-    assert tool_call.parameters == {"window_days": 30}
+    assert tool_call.parameters == {
+        "window_days": 30,
+        "filters": {
+            "product_ids": ["P001", "P002"],
+            "include_refunds": False,
+            "minimum_gmv": 10.5,
+            "optional": None,
+        },
+    }
     assert evidence.dimensions == {"product_id": "P001"}
     assert evidence.metrics == {"gmv": 100.0}
 
@@ -107,6 +127,48 @@ def test_case_schema_accepts_a_traceable_case() -> None:
         "dimensions": {"period": "current_vs_previous"},
         "metrics": {"gmv_change_rate": -0.12},
     }
+
+
+def test_case_schema_roundtrips_all_recursive_json_values() -> None:
+    payload = valid_case()
+    payload["metadata"] = {
+        "source_label": "Synthetic E-commerce Data",
+        "generation": {
+            "seed": 20260928,
+            "flags": [True, False, None],
+            "weights": [1, 0.5],
+        },
+    }
+    payload["expected_tool_calls"][0]["parameters"] = {
+        "filters": [{"field": "region", "values": ["north", "south"]}],
+        "limit": 10,
+    }
+
+    case = EvaluationCase.model_validate(payload)
+    restored = EvaluationCase.model_validate_json(case.model_dump_json())
+
+    assert restored == case
+    assert restored.model_dump() == payload
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "problem_key"),
+    [
+        ("parameters", {"bad_parameter": object()}, "bad_parameter"),
+        ("metadata", {"bad_metadata": object()}, "bad_metadata"),
+    ],
+)
+def test_case_schema_rejects_non_json_values_with_problem_key(
+    field: str, value: object, problem_key: str
+) -> None:
+    payload = valid_case()
+    if field == "parameters":
+        payload["expected_tool_calls"][0][field] = value
+    else:
+        payload[field] = value
+
+    with pytest.raises(ValidationError, match=problem_key):
+        EvaluationCase.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -170,13 +232,16 @@ def test_case_schema_rejects_duplicate_evidence_ids() -> None:
 def test_case_schema_requires_gold_metrics_to_be_backed_by_evidence() -> None:
     payload = valid_case()
     payload["gold_metrics"] = {"unsupported_metric": 1.0}
+    payload["gold_metric_evidence"] = {
+        "unsupported_metric": "EV_CASE_001_01"
+    }
     payload["numeric_tolerances"] = {"unsupported_metric": 0.1}
 
-    with pytest.raises(ValidationError, match="gold metrics must be backed by evidence"):
+    with pytest.raises(ValidationError, match="unsupported_metric"):
         EvaluationCase.model_validate(payload)
 
 
-def test_gold_metric_may_match_any_evidence_row_with_the_same_metric_name() -> None:
+def test_gold_metric_uses_its_explicit_evidence_id_not_another_matching_row() -> None:
     payload = valid_case()
     payload["gold_evidence"].append(
         {
@@ -186,10 +251,106 @@ def test_gold_metric_may_match_any_evidence_row_with_the_same_metric_name() -> N
             "metrics": {"gmv_change_rate": -0.25},
         }
     )
+    payload["gold_metric_evidence"]["gmv_change_rate"] = "EV_CASE_001_02"
 
-    assert EvaluationCase.model_validate(payload).gold_metrics == {
-        "gmv_change_rate": -0.12
+    with pytest.raises(ValidationError, match="gmv_change_rate.*EV_CASE_001_02"):
+        EvaluationCase.model_validate(payload)
+
+
+def test_gold_metrics_must_not_be_empty() -> None:
+    payload = valid_case()
+    payload["gold_metrics"] = {}
+    payload["gold_metric_evidence"] = {}
+    payload["numeric_tolerances"] = {}
+
+    with pytest.raises(ValidationError):
+        EvaluationCase.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("mapping", "problem_key"),
+    [
+        ({}, "gmv_change_rate"),
+        (
+            {
+                "gmv_change_rate": "EV_CASE_001_01",
+                "unknown_metric": "EV_CASE_001_01",
+            },
+            "unknown_metric",
+        ),
+        ({"gmv_change_rate": "EV_CASE_001_99"}, "EV_CASE_001_99"),
+    ],
+)
+def test_gold_metric_evidence_mapping_validates_metric_names_and_evidence_ids(
+    mapping: dict[str, str], problem_key: str
+) -> None:
+    payload = valid_case()
+    payload["gold_metric_evidence"] = mapping
+
+    with pytest.raises(ValidationError, match=problem_key):
+        EvaluationCase.model_validate(payload)
+
+
+def test_gold_evidence_rejects_duplicate_dimension_rows() -> None:
+    payload = valid_case()
+    duplicate = deepcopy(payload["gold_evidence"][0])
+    duplicate["evidence_id"] = "EV_CASE_001_02"
+    payload["gold_evidence"].append(duplicate)
+
+    with pytest.raises(
+        ValidationError, match="EV_CASE_001_01.*EV_CASE_001_02.*period"
+    ):
+        EvaluationCase.model_validate(payload)
+
+
+@pytest.mark.parametrize("target", ["gold_metrics", "gold_evidence"])
+@pytest.mark.parametrize("value", [True, "1.25", nan, inf, -inf])
+def test_gold_numeric_values_reject_bool_numeric_strings_and_non_finite_numbers(
+    target: str, value: object
+) -> None:
+    payload = valid_case()
+    if target == "gold_metrics":
+        payload["gold_metrics"]["gmv_change_rate"] = value
+    else:
+        payload["gold_evidence"][0]["metrics"]["gmv_change_rate"] = value
+
+    with pytest.raises(ValidationError, match="gmv_change_rate"):
+        EvaluationCase.model_validate(payload)
+
+
+def test_gold_numeric_values_preserve_int_and_float_types_through_roundtrip() -> None:
+    payload = valid_case()
+    payload["gold_metrics"] = {"order_count": 12, "gmv_change_rate": -0.12}
+    payload["gold_metric_evidence"] = {
+        "order_count": "EV_CASE_001_01",
+        "gmv_change_rate": "EV_CASE_001_01",
     }
+    payload["gold_evidence"][0]["metrics"] = {
+        "order_count": 12,
+        "gmv_change_rate": -0.12,
+    }
+
+    case = EvaluationCase.model_validate(payload)
+    restored = EvaluationCase.model_validate_json(case.model_dump_json())
+
+    assert type(restored.gold_metrics["order_count"]) is int
+    assert type(restored.gold_metrics["gmv_change_rate"]) is float
+
+
+def test_allowed_alternatives_require_non_empty_unique_paths_distinct_from_primary() -> None:
+    payload = valid_case()
+    primary = deepcopy(payload["expected_tool_calls"])
+    alternative = [{"name": "query_sales_summary", "parameters": {"window_days": 30}}]
+
+    for alternatives, problem_key in [
+        ([[]], "allowed_alternatives\\[0\\]"),
+        ([primary], "allowed_alternatives\\[0\\]"),
+        ([alternative, deepcopy(alternative)], "allowed_alternatives\\[1\\]"),
+    ]:
+        candidate = deepcopy(payload)
+        candidate["allowed_alternatives"] = alternatives
+        with pytest.raises(ValidationError, match=problem_key):
+            EvaluationCase.model_validate(candidate)
 
 
 @pytest.mark.parametrize(
@@ -259,10 +420,23 @@ def test_case_schema_requires_unique_tags_including_primary_capability(
         EvaluationCase.model_validate(payload)
 
 
-def test_case_and_nested_models_forbid_undeclared_fields() -> None:
+def test_case_model_forbids_undeclared_fields() -> None:
     payload = valid_case()
     payload["unexpected"] = True
+
+    with pytest.raises(ValidationError) as exc_info:
+        EvaluationCase.model_validate(payload)
+
+    assert [error["loc"] for error in exc_info.value.errors()] == [("unexpected",)]
+
+
+def test_nested_model_forbids_undeclared_fields_without_false_positive() -> None:
+    payload = valid_case()
     payload["expected_tool_calls"][0]["unexpected"] = True
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as exc_info:
         EvaluationCase.model_validate(payload)
+
+    assert [error["loc"] for error in exc_info.value.errors()] == [
+        ("expected_tool_calls", 0, "unexpected")
+    ]
