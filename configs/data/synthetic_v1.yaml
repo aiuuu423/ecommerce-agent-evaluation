@@ -1,0 +1,19 @@
+dataset_version: v1
+schema_version: "1.0"
+source_label: Synthetic E-commerce Data
+seed: 20260928
+start_date: 2026-01-01
+days: 120
+product_count: 40
+customer_count: 300
+categories: [beauty, food, home, apparel]
+regions: [north, south, east, west]
+channels: [organic, search, social, affiliate]
+anomalies:
+  - {anomaly_id: A01, kind: sales_drop, product_id: P001, start_day: 90, end_day: 119, multiplier: 0.55}
+  - {anomaly_id: A02, kind: traffic_drop, product_id: P002, start_day: 90, end_day: 119, multiplier: 0.55}
+  - {anomaly_id: A03, kind: conversion_drop, product_id: P003, start_day: 90, end_day: 119, multiplier: 0.50}
+  - {anomaly_id: A04, kind: high_refund, product_id: P004, start_day: 90, end_day: 119, multiplier: 4.00}
+  - {anomaly_id: A05, kind: missing_traffic, product_id: P005, start_day: 105, end_day: 110, multiplier: 1.00}
+  - {anomaly_id: A06, kind: extreme_traffic_spike, product_id: P006, start_day: 112, end_day: 112, multiplier: 4.00}
+  - {anomaly_id: A07, kind: multi_factor_drop, product_id: P007, start_day: 90, end_day: 119, multiplier: 0.70}
