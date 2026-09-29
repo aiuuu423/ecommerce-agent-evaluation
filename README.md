@@ -67,7 +67,8 @@ python3.12 -m app.data.phase1 \
 - `statistical_cluster_id` 将同一业务任务与主要能力下的复述变体归入同一统计簇。
   置信区间、显著性检验与有效样本量必须按 cluster 计算，不得把同簇 Case 当作独立样本。
 - Public Validation 是公开、可反复使用的开发验证集，不是盲测，也不得称为盲测。
-  只有在 Optimized V2 方案与实现冻结后，才生成此前未见的 Final Holdout，用于最终确认。
+  只有在 Optimized V2 方案、Prompt、实现与评分协议冻结后，才生成此前未见的最终盲测集，
+  用于最终确认。
 - 冻结产物的 Case Set ID 与 SHA-256 见
   `data/synthetic/phase1_sha256_baseline.json`。
 - Phase 1 不需要 API Key，尚未接入真实模型或运行 Agent。Baseline、Optimized、

@@ -7,7 +7,8 @@
 **Architecture:** Phase 1 分为两个顺序里程碑。里程碑 A 使用独立的 Development/Public Validation
 版本化 YAML 配置和固定 Seed 生成 Pandas DataFrame，经过 Pydantic Schema、业务不变量与
 独立指标检查后，以跨平台文件锁和不可变目录原子发布 Parquet 与 Manifest；里程碑 B 使用
-DuckDB 只读查询两套冻结快照，生成带 Gold Evidence、成功门控和开发集/保留集标签的
+DuckDB 只读查询两套冻结快照，生成带 Gold Evidence、成功门控和
+Development/Public Validation 标签的
 JSONL Cases。统一入口 `build-phase1 = app.data.phase1:main` 从配置中的
 `dataset_version` 动态推导两套数据目录和 Cases 目录。业务生成逻辑、Gold SQL 和 Case
 模板相互隔离，降低共享错误导致的“自证正确”风险。
@@ -30,7 +31,7 @@ FileLock、Pytest、Ruff、Jupyter/nbformat
 - 独立 SQL Gold 查询。
 - Evaluation Case Schema。
 - 100 个可复现 Cases。
-- 开发集与保留集划分。
+- Development 与 Public Validation 划分。
 - 数据质量报告与探索 Notebook。
 - Phase 1 文档和状态更新。
 
@@ -189,7 +190,8 @@ data/synthetic/{public_validation_dataset_version}/data_quality_report.json
 - 每个业务任务在 development 中 14 个、public_validation 中 6 个。
 - Public Validation 十类主要能力各 3 个 Case，难度 easy/medium/hard 为 9/12/9。
 - Public Validation 是公开验证集，不是盲测；统计推断以 `statistical_cluster_id`
-  为单位。Optimized V2 冻结后再生成此前未见的 Final Holdout。
+  为单位。Optimized V2 的方案、Prompt、实现与评分协议冻结后，再生成此前未见的
+  最终盲测集。
 
 ---
 
@@ -2330,8 +2332,8 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 - 每个 Case 顶层记录 `statistical_cluster_id`；同一
   `business_task + primary_capability` 的复述变体共享 cluster。统计分析按 cluster
   聚合或重采样，不把同簇 Case 当作独立样本。
-- Public Validation 是公开验证集，不是盲测。Optimized V2 冻结后才生成此前未见的
-  Final Holdout。
+- Public Validation 是公开验证集，不是盲测。Optimized V2 的方案、Prompt、实现与
+  评分协议冻结后，才生成此前未见的最终盲测集。
 - 商品列表类问题固定显式要求 `Top-3`；`gold_metrics` 与
   `gold_metric_evidence` 必须覆盖每条 Gold Evidence 中的全部指标。
 - `configs/evaluation/tool_contract_v1.yaml` 冻结工具路径和参数契约，但本 Task
@@ -2984,7 +2986,7 @@ Expected:
 - Dataset Manifest 与文件哈希
 - 数据质量报告
 - 100 个 Evaluation Cases
-- Case Manifest 与开发集/保留集分布
+- Case Manifest 与 Development/Public Validation 分布
 
 Phase 1 尚未运行 Agent，因此所有 Agent Evaluation 结果仍为 `Pending / Not Run`。
 ```

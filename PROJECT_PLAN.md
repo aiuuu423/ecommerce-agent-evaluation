@@ -437,8 +437,8 @@ Error Shift 分析同时回答：
 Mock 模式主要验证系统确定性。Real LLM 模式通过 `n_repeats` 记录重复运行；若预算只允许单次运行，必须说明未充分评估模型输出方差。
 
 Public Validation 可用于 V1/V2 开发与选择，不能作为未见数据上的最终泛化证据。
-Optimized V2 的方案、Prompt、实现与评分协议冻结后，才生成此前未见的 Final Holdout；
-Final Holdout 生成前不得查看其 Case 或 Gold，项目也不得把 Public Validation 结果称为盲测。
+Optimized V2 的方案、Prompt、实现与评分协议冻结后，才生成此前未见的最终盲测集；
+该数据集生成前不得查看其 Case 或 Gold，项目也不得把 Public Validation 结果称为盲测。
 
 ## 12. 实验可复现协议
 

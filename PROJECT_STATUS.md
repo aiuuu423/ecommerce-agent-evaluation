@@ -43,6 +43,8 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Va
 - [x] 验证干净重建的 16 个产物文件与冻结版本逐字节一致。
 - [x] 验证 Gold SQL 不读取生成配置、异常 ID 或异常倍率。
 - [x] 完成 Phase 1 全量测试、静态检查与 Notebook 真实执行。
+- [x] 清理旧数据分区语义；Phase 1 统一使用 Development/Public Validation，
+  Notebook 避免暴露预设答案与异常配置，Phase 0 记录现行分阶段治理并明确取代旧决策。
 
 ## Pending
 
@@ -67,7 +69,7 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Va
 
 - Synthetic Data 和 Evaluation Cases 为模拟数据，只用于受控评测。
 - Public Validation 是公开开发验证集，不是盲测；V2 冻结后才生成此前未见的
-  Final Holdout。
+  最终盲测集。
 - Parquet 字节一致性要求使用锁定依赖中的相同 Pandas/PyArrow 写入器版本。
 - Real LLM provider、具体模型和预算尚未确定；不影响 Mock 路径设计。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
@@ -105,6 +107,9 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Va
 - 全量测试：`357 passed`。
 - Notebook 结构与真实执行测试：`6 passed`（项目根目录与 `notebooks/` 两种工作目录）。
 - `python -m ruff check app tests notebooks`：`All checks passed!`。
+- 旧术语搜索：仅 Phase 0 的“Public Validation 不是最终盲测集”和历史决策说明命中。
+- 变更 Markdown 检查：`markdownlint-cli2`（忽略既有代码块制表符、行长与列表空行规则）
+  `0 error(s)`。
 - `git diff --check`：PASS。
 
 ## Next Step
