@@ -31,6 +31,7 @@ dev = [
 
 [project.scripts]
 build-phase1 = "app.data.phase1:main"
+phase2-smoke = "app.experiments.phase2_smoke:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

@@ -18,7 +18,10 @@ def test_project_metadata_declares_python_311_and_phase_1_dependencies() -> None
     project = config["project"]
 
     assert project["requires-python"] == ">=3.11"
-    assert project["scripts"] == {"build-phase1": "app.data.phase1:main"}
+    assert project["scripts"] == {
+        "build-phase1": "app.data.phase1:main",
+        "phase2-smoke": "app.experiments.phase2_smoke:main",
+    }
     assert dependency_names(project["dependencies"]) == {
         "duckdb",
         "filelock",

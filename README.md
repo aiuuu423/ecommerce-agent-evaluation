@@ -74,3 +74,19 @@ python3.12 -m app.data.phase1 \
 - Phase 1 不需要 API Key，尚未接入真实模型或运行 Agent。Baseline、Optimized、
   A/B Metrics、Error Analysis、Statistical Validation、Latency 均为
   `Pending / Not Run`，Token Usage 与 Cost 为 `Unavailable`。
+
+## Phase 2 offline smoke
+
+Phase 2 提供一个确定性策略驱动的离线 smoke，用真实工具链验证
+`query_sales → calculate_metrics → final answer`。它不读取 100 Cases、不写实验结果，也不读取
+`LLM_API_KEY`、`LLM_BASE_URL` 或 `LLM_MODEL`，并且不会访问网络。
+
+smoke 只读取已构建的 Development snapshot。首次运行或 snapshot 不存在时，先构建数据，再运行：
+
+```bash
+make PYTHON=python3.12 phase1-data
+make PYTHON=python3.12 phase2-smoke
+```
+
+成功时 stdout 只输出一行结构化 JSON。若 snapshot 不存在，命令会在 stderr 明确提示先运行
+`make phase1-data`，且不会自行构建或写入实验产物。
