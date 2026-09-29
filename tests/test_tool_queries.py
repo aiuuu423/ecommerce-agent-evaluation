@@ -396,3 +396,95 @@ def test_query_traffic_empty_product_filter_covers_existing_catalog_scale(
         f"P{product_id:03d}" for product_id in range(1, product_count[0] + 1)
     }
     assert all(row.observed_days + row.missing_days == 30 for row in result.rows)
+
+
+def test_query_marketing_matches_catalog_spend_at_campaign_grain(
+    catalog: Catalog,
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    result = registry.invoke(
+        "query_marketing",
+        {
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-30",
+            "comparison_start_date": "2026-03-02",
+            "comparison_end_date": "2026-03-31",
+            "product_ids": ["P001"],
+        },
+        tool_context,
+    )
+
+    assert result.columns == [
+        "period",
+        "product_id",
+        "category",
+        "campaign_id",
+        "spend",
+    ]
+    assert {row.product_id for row in result.rows} == {"P001"}
+    for period, start_date, end_date in (
+        ("current", "2026-04-01", "2026-04-30"),
+        ("previous", "2026-03-02", "2026-03-31"),
+    ):
+        expected = catalog.execute(
+            """
+            select product_id, campaign_id, sum(spend)
+            from marketing
+            where product_id = ? and date between ? and ?
+            group by product_id, campaign_id
+            order by product_id, campaign_id
+            """,
+            ["P001", start_date, end_date],
+        ).fetchall()
+        actual = [
+            (row.product_id, row.campaign_id, row.spend)
+            for row in result.rows
+            if row.period == period
+        ]
+        assert actual == [
+            (product_id, campaign_id, pytest.approx(float(spend)))
+            for product_id, campaign_id, spend in expected
+        ]
+
+
+def test_query_marketing_empty_product_filter_and_stable_campaign_sort(
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    result = registry.invoke(
+        "query_marketing",
+        {
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-03",
+            "comparison_start_date": "2026-03-29",
+            "comparison_end_date": "2026-03-31",
+            "product_ids": [],
+        },
+        tool_context,
+    )
+
+    assert len({row.product_id for row in result.rows}) > 1
+    assert result.rows == sorted(
+        result.rows,
+        key=lambda row: (row.period, row.product_id, row.category, row.campaign_id),
+    )
+
+
+def test_query_marketing_accepts_366_day_window_at_execution_boundary(
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    result = registry.invoke(
+        "query_marketing",
+        {
+            "start_date": "2025-05-01",
+            "end_date": "2026-05-01",
+            "comparison_start_date": "2024-05-01",
+            "comparison_end_date": "2025-05-01",
+            "product_ids": ["P001"],
+        },
+        tool_context,
+    )
+
+    assert result.tool_name == "query_marketing"

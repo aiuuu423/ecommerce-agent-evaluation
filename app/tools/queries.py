@@ -7,9 +7,12 @@ import pandas as pd
 
 from app.tools.base import ToolContext
 from app.tools.schemas import (
+    MARKETING_COLUMNS,
     PRODUCT_COLUMNS,
     SALES_COLUMNS,
     TRAFFIC_COLUMNS,
+    QueryMarketingInput,
+    QueryMarketingResult,
     QueryProductInput,
     QueryProductResult,
     QuerySalesInput,
@@ -23,6 +26,7 @@ QueryResultT = TypeVar(
     QueryProductResult,
     QuerySalesResult,
     QueryTrafficResult,
+    QueryMarketingResult,
 )
 
 
@@ -247,3 +251,51 @@ def query_traffic(
     ).fetch_df()
     frame = frame.loc[:, TRAFFIC_COLUMNS]
     return _frame_result("query_traffic", frame, context, QueryTrafficResult)
+
+
+def query_marketing(
+    args: QueryMarketingInput,
+    context: ToolContext,
+) -> QueryMarketingResult:
+    product_clause = ""
+    product_parameters: list[str] = []
+    if args.product_ids:
+        placeholders = ", ".join("?" for _ in args.product_ids)
+        product_clause = f"and marketing.product_id in ({placeholders})"
+        product_parameters = list(args.product_ids)
+
+    frame = context.catalog.execute(
+        f"""
+        with periods(period, period_start, period_end) as (
+          values
+            ('current', cast(? as date), cast(? as date)),
+            ('previous', cast(? as date), cast(? as date))
+        )
+        select
+          periods.period,
+          marketing.product_id,
+          products.category,
+          marketing.campaign_id,
+          sum(marketing.spend) as spend
+        from periods
+        join marketing on marketing.date between period_start and period_end
+        join products using (product_id)
+        where true
+          {product_clause}
+        group by
+          periods.period,
+          marketing.product_id,
+          products.category,
+          marketing.campaign_id
+        order by period, product_id, category, campaign_id
+        """,
+        [
+            args.start_date,
+            args.end_date,
+            args.comparison_start_date,
+            args.comparison_end_date,
+            *product_parameters,
+        ],
+    ).fetch_df()
+    frame = frame.loc[:, MARKETING_COLUMNS]
+    return _frame_result("query_marketing", frame, context, QueryMarketingResult)

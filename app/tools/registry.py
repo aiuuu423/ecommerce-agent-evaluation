@@ -10,7 +10,12 @@ from app.tools.base import (
     ToolOutputValidationError,
     UnknownToolError,
 )
-from app.tools.queries import query_product, query_sales, query_traffic
+from app.tools.queries import (
+    query_marketing,
+    query_product,
+    query_sales,
+    query_traffic,
+)
 from app.tools.schemas import (
     AnyToolResult,
     CalculateMetricsInput,
@@ -148,6 +153,7 @@ def build_default_registry() -> ToolRegistry:
             description="Return bounded marketing aggregates for current and comparison windows.",
             input_model=QueryMarketingInput,
             output_model=QueryMarketingResult,
+            handler=query_marketing,
         ),
         _definition(
             name="calculate_metrics",
