@@ -3,7 +3,7 @@ DEVELOPMENT_CONFIG ?= configs/data/synthetic_v1.yaml
 PUBLIC_VALIDATION_CONFIG ?= configs/data/synthetic_public_validation_v1.yaml
 TOOL_CONTRACT ?= configs/evaluation/tool_contract_v1.yaml
 PHASE1_OUTPUT_ROOT ?= data
-PHASE2_SMOKE_DIR ?= data
+PHASE2_SMOKE_DIR ?= .tmp/phase2-smoke
 
 .PHONY: check-python install lock test lint phase1-data phase1-cases phase1 phase2-smoke
 

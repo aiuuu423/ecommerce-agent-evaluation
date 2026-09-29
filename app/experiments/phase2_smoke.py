@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 
 from app.agents import AgentRunner, RunRequest
-from app.data.config import load_data_config
 from app.data.database import open_dataset
+from app.data.generator import build_snapshot
 from app.llm import AdapterRequest, AssistantAction, DeterministicAdapter, ToolCall
 from app.tools import build_default_registry
 
@@ -61,19 +61,6 @@ def smoke_policy(request: AdapterRequest) -> AssistantAction:
     raise ValueError("unexpected smoke state")
 
 
-def _snapshot_path(config_path: Path, work_dir: Path) -> Path:
-    version = load_data_config(config_path).dataset_version
-    candidates = (
-        work_dir / "snapshot",
-        work_dir / "synthetic" / version,
-        work_dir,
-    )
-    return next(
-        (candidate for candidate in candidates if (candidate / "manifest.json").is_file()),
-        candidates[0],
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Phase 2 offline smoke")
     parser.add_argument(
@@ -85,13 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        snapshot = _snapshot_path(args.config, args.work_dir)
-        if not (snapshot / "manifest.json").is_file():
-            print(
-                "error: Phase 1 snapshot is missing; run make phase1-data first",
-                file=sys.stderr,
-            )
-            return 1
+        snapshot = args.work_dir / "snapshot"
+        build_snapshot(args.config, snapshot)
         adapter = DeterministicAdapter(smoke_policy)
         with open_dataset(snapshot) as catalog:
             result = AgentRunner(
@@ -102,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
                 catalog,
             )
             dataset_id = catalog.verified_summary["dataset_id"]
+        if result.status != "completed":
+            print("error: offline smoke runner did not complete", file=sys.stderr)
+            return 1
         payload = {
             "status": result.status,
             "adapter": adapter.adapter_name,
@@ -114,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             "final_answer": result.final_answer,
         }
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-        return 0 if result.status == "completed" else 1
+        return 0
     except Exception as exc:
         print(f"error: offline smoke failed: {type(exc).__name__}", file=sys.stderr)
         return 1
