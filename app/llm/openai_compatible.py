@@ -236,7 +236,10 @@ class OpenAICompatibleAdapter:
             raise OpenAIProtocolError("tool result call_id does not match pending call_id")
         if execution.call_id in self._sent_call_ids:
             raise OpenAIProtocolError("tool result call_id was already sent")
-        if execution.arguments != self._pending_arguments:
+        if not _execution_arguments_match_pending(
+            self._pending_arguments,
+            execution.arguments,
+        ):
             raise OpenAIProtocolError(
                 "tool result arguments do not match pending tool call arguments"
             )
@@ -404,6 +407,33 @@ def _validate_timeout(value: object) -> float:
 
 def _execution_payload(execution: PriorToolExecution) -> dict[str, JsonValue]:
     return execution.model_dump(mode="json")
+
+
+def _execution_arguments_match_pending(
+    pending: dict[str, JsonValue],
+    execution: dict[str, JsonValue],
+) -> bool:
+    return all(
+        key in execution and _json_values_equal(value, execution[key])
+        for key, value in pending.items()
+    )
+
+
+def _json_values_equal(left: JsonValue, right: JsonValue) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, list):
+        assert isinstance(right, list)
+        return len(left) == len(right) and all(
+            _json_values_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    if isinstance(left, dict):
+        assert isinstance(right, dict)
+        return left.keys() == right.keys() and all(
+            _json_values_equal(value, right[key]) for key, value in left.items()
+        )
+    return left == right
 
 
 def _validate_json_value(value: object, location: str, depth: int = 0) -> None:

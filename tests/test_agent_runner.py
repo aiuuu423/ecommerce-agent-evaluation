@@ -515,6 +515,54 @@ def test_runner_openai_adapter_fake_transport_full_chain(catalog: Catalog) -> No
     ] == ["call_sales", "call_metrics"]
 
 
+def test_runner_openai_adapter_accepts_normalized_default_arguments(
+    catalog: Catalog,
+) -> None:
+    raw_arguments = {
+        "start_date": "2026-04-01",
+        "end_date": "2026-04-30",
+        "comparison_start_date": "2026-03-02",
+        "comparison_end_date": "2026-03-31",
+    }
+    transport = FakeTransport(
+        [
+            tool_payload(
+                call_id="call_marketing",
+                name="query_marketing",
+                arguments=raw_arguments,
+                usage=(10, 2, 12),
+            ),
+            answer_payload(
+                content="营销数据查询完成。",
+                usage=(5, 3, 8),
+            ),
+        ]
+    )
+    adapter = OpenAICompatibleAdapter(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="test-model",
+        transport=transport,
+    )
+
+    result = AgentRunner(
+        registry=build_default_registry(),
+        adapter=adapter,
+    ).run(RunRequest(user_input="比较本期与上期营销投入"), catalog)
+
+    assert result.status == "completed"
+    assert result.final_answer == "营销数据查询完成。"
+    assert result.prior_tool_executions[0].arguments == {
+        **raw_arguments,
+        "product_ids": [],
+    }
+    assert [message["role"] for message in transport.payloads[1]["messages"]] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+
 @pytest.mark.parametrize(
     ("policy", "error_code"),
     [

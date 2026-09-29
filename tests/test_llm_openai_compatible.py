@@ -367,8 +367,52 @@ def test_openai_adapter_rejects_tool_result_with_changed_arguments() -> None:
     adapter = adapter_with(SequenceTransport([tool_payload(), answer_payload()]))
     adapter.complete(sample_request())
     execution = execution_for().model_copy(
-        update={"arguments": {"product_ids": ["P002"]}}
+        update={
+            "arguments": {
+                "product_ids": ["P002"],
+                "defaulted_field": [],
+            }
+        }
     )
+    with pytest.raises(OpenAIProtocolError, match="arguments"):
+        adapter.complete(sample_request(executions=[execution]))
+
+
+def test_openai_adapter_rejects_tool_result_missing_original_argument() -> None:
+    adapter = adapter_with(SequenceTransport([tool_payload(), answer_payload()]))
+    adapter.complete(sample_request())
+    execution = execution_for().model_copy(
+        update={"arguments": {"defaulted_field": []}}
+    )
+
+    with pytest.raises(OpenAIProtocolError, match="arguments"):
+        adapter.complete(sample_request(executions=[execution]))
+
+
+def test_openai_adapter_compares_nested_argument_values_strictly() -> None:
+    pending_arguments = {
+        "product_ids": ["P001"],
+        "filters": {"enabled": 1},
+    }
+    adapter = adapter_with(
+        SequenceTransport(
+            [
+                tool_payload(arguments=json.dumps(pending_arguments)),
+                answer_payload(),
+            ]
+        )
+    )
+    adapter.complete(sample_request())
+    execution = execution_for().model_copy(
+        update={
+            "arguments": {
+                "product_ids": ["P001"],
+                "filters": {"enabled": True},
+                "defaulted_field": [],
+            }
+        }
+    )
+
     with pytest.raises(OpenAIProtocolError, match="arguments"):
         adapter.complete(sample_request(executions=[execution]))
 
