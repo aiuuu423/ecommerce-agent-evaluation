@@ -140,7 +140,7 @@ QUESTION_STEMS_BY_SPLIT = {
             "制定下周关注顺序，说明每项优先事项的数据依据。",
         ),
     },
-    "holdout": {
+    "public_validation": {
         BusinessTask.GMV_DIAGNOSIS: (
             "经营例会需要判断本期销售额走向，请用相邻周期数据形成归因结论。",
             "请从成交表现出发评估本期营收增减，并标明结论的事实基础。",
@@ -162,6 +162,38 @@ QUESTION_STEMS_BY_SPLIT = {
             "面向下周制定商品行动队列，并解释各项排序依据。",
         ),
     },
+}
+PUBLIC_VALIDATION_CASE_KEYS = {
+    ("gmv_diagnosis", "adversarial_distractor", 1),
+    ("gmv_diagnosis", "adversarial_distractor", 2),
+    ("product_anomaly", "adversarial_distractor", 1),
+    ("gmv_diagnosis", "anomaly_detection", 1),
+    ("gmv_diagnosis", "anomaly_detection", 2),
+    ("product_anomaly", "anomaly_detection", 1),
+    ("gmv_diagnosis", "basic_query", 1),
+    ("gmv_diagnosis", "basic_query", 2),
+    ("product_anomaly", "basic_query", 1),
+    ("product_anomaly", "data_insufficiency", 2),
+    ("conversion_decline", "data_insufficiency", 1),
+    ("conversion_decline", "data_insufficiency", 2),
+    ("product_anomaly", "metric_calculation", 2),
+    ("conversion_decline", "metric_calculation", 1),
+    ("conversion_decline", "metric_calculation", 2),
+    ("product_anomaly", "multi_step_reasoning", 2),
+    ("products_to_watch", "multi_step_reasoning", 1),
+    ("products_to_watch", "multi_step_reasoning", 2),
+    ("conversion_decline", "parameter_selection", 1),
+    ("conversion_decline", "parameter_selection", 2),
+    ("products_to_watch", "parameter_selection", 1),
+    ("products_to_watch", "recommendation", 1),
+    ("next_week_priority", "recommendation", 1),
+    ("next_week_priority", "recommendation", 2),
+    ("products_to_watch", "root_cause_analysis", 2),
+    ("next_week_priority", "root_cause_analysis", 1),
+    ("next_week_priority", "root_cause_analysis", 2),
+    ("products_to_watch", "tool_selection", 2),
+    ("next_week_priority", "tool_selection", 1),
+    ("next_week_priority", "tool_selection", 2),
 }
 CAPABILITY_INSTRUCTIONS = {
     Capability.BASIC_QUERY: "直接回答，引用关键数据。",
@@ -484,18 +516,9 @@ def _expected_behavior(
     return behavior
 
 
-def _development_families() -> set[tuple[BusinessTask, Capability]]:
-    development: set[tuple[BusinessTask, Capability]] = set()
-    for task in BUSINESS_TASKS:
-        families = [(task, capability) for capability in CAPABILITIES]
-        ranked = sorted(
-            families,
-            key=lambda family: sha256(
-                f"split-v1|{family[0].value}|{family[1].value}".encode()
-            ).hexdigest(),
-        )
-        development.update(ranked[:7])
-    return development
+def _case_split(task: BusinessTask, capability: Capability, variant: int) -> str:
+    key = (task.value, capability.value, variant)
+    return "public_validation" if key in PUBLIC_VALIDATION_CASE_KEYS else "development"
 
 
 def _tool_names(
@@ -548,18 +571,59 @@ def _assign_difficulties(payloads: list[dict[str, Any]]) -> None:
         payload["difficulty"] = "easy" if index < 30 else "medium" if index < 70 else "hard"
 
 
+def _validate_frozen_distribution(payloads: list[dict[str, Any]]) -> None:
+    split_counts = Counter(payload["split"] for payload in payloads)
+    if split_counts != Counter(development=70, public_validation=30):
+        raise ValueError(f"invalid frozen split distribution: {split_counts}")
+
+    for task in BUSINESS_TASKS:
+        task_splits = Counter(
+            payload["split"]
+            for payload in payloads
+            if payload["business_task"] is task
+        )
+        if task_splits != Counter(development=14, public_validation=6):
+            raise ValueError(
+                f"invalid frozen split distribution for {task.value}: {task_splits}"
+            )
+
+    public_validation = [
+        payload for payload in payloads if payload["split"] == "public_validation"
+    ]
+    capability_counts = Counter(
+        payload["primary_capability"] for payload in public_validation
+    )
+    if capability_counts != Counter({capability: 3 for capability in CAPABILITIES}):
+        raise ValueError(
+            "invalid public validation capability distribution: "
+            f"{capability_counts}"
+        )
+    difficulty_counts = Counter(
+        payload["difficulty"] for payload in public_validation
+    )
+    if difficulty_counts != Counter(easy=9, medium=12, hard=9):
+        raise ValueError(
+            f"invalid public validation difficulty distribution: {difficulty_counts}"
+        )
+
+
 def build_cases(
     development_dataset_dir: Path | str,
-    holdout_dataset_dir: Path | str,
+    public_validation_dataset_dir: Path | str,
     tool_contract_path: Path | str = DEFAULT_TOOL_CONTRACT,
 ) -> list[EvaluationCase]:
     directories = {
         "development": Path(development_dataset_dir),
-        "holdout": Path(holdout_dataset_dir),
+        "public_validation": Path(public_validation_dataset_dir),
     }
     manifests = {split: _load_manifest(path) for split, path in directories.items()}
-    if manifests["development"]["dataset_id"] == manifests["holdout"]["dataset_id"]:
-        raise ValueError("development and holdout must use different dataset snapshots")
+    if (
+        manifests["development"]["dataset_id"]
+        == manifests["public_validation"]["dataset_id"]
+    ):
+        raise ValueError(
+            "development and public validation must use different dataset snapshots"
+        )
     gold_by_split = {
         split: build_gold_bundle(directory) for split, directory in directories.items()
     }
@@ -578,21 +642,15 @@ def build_cases(
         for split, directory in directories.items()
     }
     contract, contract_digest = _load_tool_contract(tool_contract_path)
-    development_families = _development_families()
-
     payloads: list[dict[str, Any]] = []
     case_number = 1
     for task in BUSINESS_TASKS:
         for capability in CAPABILITIES:
-            split = (
-                "development"
-                if (task, capability) in development_families
-                else "holdout"
-            )
-            manifest = manifests[split]
-            gold = gold_by_split[split]
-            product_ids = product_ids_by_split[split]
             for variant in range(2):
+                split = _case_split(task, capability, variant + 1)
+                manifest = manifests[split]
+                gold = gold_by_split[split]
+                product_ids = product_ids_by_split[split]
                 rows = _evidence_rows(gold, task, capability)
                 insufficiency = (
                     DATA_INSUFFICIENCY_BY_TASK[task]
@@ -628,7 +686,7 @@ def build_cases(
                     "source_label": manifest["source_label"],
                     "variant": variant + 1,
                     "semantic_family_id": f"{task.value}:{capability.value}",
-                    "holdout_policy": "final_evaluation_only",
+                    "validation_role": split,
                     "complexity_score": complexity_score,
                     "top_k": (
                         LIST_TOP_K
@@ -650,7 +708,10 @@ def build_cases(
                 payloads.append(
                     {
                         "case_id": f"CASE_{case_number:03d}",
-                        "case_version": "1.1",
+                        "case_version": "1.2",
+                        "statistical_cluster_id": (
+                            f"{task.value}:{capability.value}"
+                        ),
                         "tool_contract_version": contract["contract_version"],
                         "tool_contract_sha256": contract_digest,
                         "dataset_version": manifest["dataset_version"],
@@ -701,6 +762,7 @@ def build_cases(
                 case_number += 1
 
     _assign_difficulties(payloads)
+    _validate_frozen_distribution(payloads)
     return [EvaluationCase.model_validate(payload) for payload in payloads]
 
 
@@ -720,12 +782,14 @@ def write_cases(
             for case in cases
             if case.split == split
         }
-        for split in ("development", "holdout")
+        for split in ("development", "public_validation")
     }
     if any(len(split_identities) != 1 for split_identities in identities.values()):
         raise ValueError("each split must reference exactly one dataset identity")
-    if identities["development"] == identities["holdout"]:
-        raise ValueError("development and holdout must reference different datasets")
+    if identities["development"] == identities["public_validation"]:
+        raise ValueError(
+            "development and public validation must reference different datasets"
+        )
     contract_identities = {
         (case.tool_contract_version, case.tool_contract_sha256) for case in cases
     }
@@ -752,18 +816,26 @@ def write_cases(
         }
     contract_version, contract_hash = next(iter(contract_identities))
     payload = {
-        "case_schema_version": "1.1",
+        "case_schema_version": "1.2",
         "tool_contract": {
             "version": contract_version,
             "sha256": contract_hash,
         },
         "datasets": datasets,
         "split_strategy": {
-            "version": "split-v1",
-            "unit": "business_task_primary_capability_family",
-            "development_families_per_task": 7,
-            "holdout_families_per_task": 3,
+            "version": "split-v2",
+            "unit": "case",
+            "statistical_unit": "statistical_cluster_id",
+            "development_cases_per_task": 14,
+            "public_validation_cases_per_task": 6,
+            "public_validation_cases_per_capability": 3,
+            "public_validation_difficulty_counts": {
+                "easy": 9,
+                "medium": 12,
+                "hard": 9,
+            },
             "cross_split_dataset_isolation": True,
+            "cross_split_cluster_isolation": False,
         },
         "source_label": "Synthetic E-commerce Data",
         "case_count": len(cases),
@@ -818,7 +890,7 @@ def write_cases(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build the Phase 1 evaluation cases")
     parser.add_argument("--development-dataset", type=Path, required=True)
-    parser.add_argument("--holdout-dataset", type=Path, required=True)
+    parser.add_argument("--public-validation-dataset", type=Path, required=True)
     parser.add_argument(
         "--tool-contract",
         type=Path,
@@ -833,14 +905,14 @@ def main() -> None:
     manifest = write_cases(
         build_cases(
             args.development_dataset,
-            args.holdout_dataset,
+            args.public_validation_dataset,
             args.tool_contract,
         ),
         args.output,
     )
     print(
         f"Built {manifest['case_count']} evaluation cases "
-        f"from development and holdout dataset snapshots"
+        "from development and public validation dataset snapshots"
     )
 
 

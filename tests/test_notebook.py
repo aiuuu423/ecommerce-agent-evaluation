@@ -32,7 +32,7 @@ def test_data_exploration_notebook_has_required_sections() -> None:
 
     assert "Synthetic E-commerce Data" in markdown
     assert "Development" in markdown
-    assert "Holdout" in markdown
+    assert "Public Validation" in markdown
 
 
 def test_notebook_is_read_only_and_contains_no_execution_state() -> None:
@@ -51,7 +51,7 @@ def test_notebook_is_read_only_and_contains_no_execution_state() -> None:
         assert write_operation not in code
 
 
-def test_notebook_uses_verified_catalog_without_holdout_leakage() -> None:
+def test_notebook_uses_verified_catalog_without_public_validation_query_access() -> None:
     notebook = load_notebook()
     code = "\n".join(cell.source for cell in notebook.cells if cell.cell_type == "code")
     content = "\n".join(cell.source for cell in notebook.cells)
@@ -59,7 +59,7 @@ def test_notebook_uses_verified_catalog_without_holdout_leakage() -> None:
     assert "Path.cwd()" in code
     assert "pyproject.toml" in code
     assert "data/synthetic/v1" in code
-    assert "data/synthetic/holdout-v1" in code
+    assert "data/synthetic/public-validation-v1" in code
     assert "open_dataset" in code
     assert ".fetch_df()" in code
     assert ".verified_summary" in code
@@ -67,10 +67,13 @@ def test_notebook_uses_verified_catalog_without_holdout_leakage() -> None:
     assert "make phase1-data" in content
     assert "pd.read_parquet" not in code
     assert "read_text(" not in code
-    assert 'catalogs["Holdout"].execute' not in code
+    assert 'catalogs["Public Validation"].execute' not in code
     assert 'catalogs = {"Development": open_dataset(SNAPSHOTS["Development"])}' in code
-    assert 'with open_dataset(SNAPSHOTS["Holdout"]) as holdout_catalog:' in code
-    assert "del holdout_catalog" in code
+    assert (
+        'with open_dataset(SNAPSHOTS["Public Validation"]) '
+        "as public_validation_catalog:"
+    ) in code
+    assert "del public_validation_catalog" in code
 
     lowered = content.lower()
     for forbidden in (
@@ -123,7 +126,7 @@ expected_summary_columns = {
     "quality_status",
 }
 assert set(dataset_summary.columns) == expected_summary_columns
-assert set(dataset_summary["dataset"]) == {"Development", "Holdout"}
+assert set(dataset_summary["dataset"]) == {"Development", "Public Validation"}
 assert dataset_summary["quality_status"].eq("pass (verified)").all()
 
 expected_metric_columns = {
@@ -154,21 +157,21 @@ development_count = catalogs["Development"].execute(
 ).fetchone()[0]
 assert development_count > 0
 
-holdout_dataset_id = dataset_summary.loc[
-    dataset_summary["dataset"].eq("Holdout"), "dataset_id"
+public_validation_dataset_id = dataset_summary.loc[
+    dataset_summary["dataset"].eq("Public Validation"), "dataset_id"
 ].item()
-queryable_holdout_handles = []
+queryable_public_validation_handles = []
 for variable_name, value in list(globals().items()):
     if not hasattr(value, "verified_summary") or not hasattr(value, "execute"):
         continue
-    if value.verified_summary["dataset_id"] != holdout_dataset_id:
+    if value.verified_summary["dataset_id"] != public_validation_dataset_id:
         continue
     try:
         value.execute("select 1").fetchone()
     except ValueError:
         continue
-    queryable_holdout_handles.append(variable_name)
-assert queryable_holdout_handles == []
+    queryable_public_validation_handles.append(variable_name)
+assert queryable_public_validation_handles == []
 """
         )
     )

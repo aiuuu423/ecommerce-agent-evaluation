@@ -42,24 +42,26 @@ def build_test_case_set(
     tmp_path: Path,
 ) -> tuple[list[EvaluationCase], dict[str, object], dict[str, object]]:
     development_dir = tmp_path / "development-v1"
-    holdout_dir = tmp_path / "holdout-v1"
+    public_validation_dir = tmp_path / "public-validation-v1"
     development_manifest = build_snapshot(
         "configs/data/synthetic_v1.yaml", development_dir
     )
-    holdout_manifest = build_snapshot(
-        "configs/data/synthetic_holdout_v1.yaml", holdout_dir
+    public_validation_manifest = build_snapshot(
+        "configs/data/synthetic_public_validation_v1.yaml",
+        public_validation_dir,
     )
     return (
-        build_cases(development_dir, holdout_dir),
+        build_cases(development_dir, public_validation_dir),
         development_manifest,
-        holdout_manifest,
+        public_validation_manifest,
     )
 
 
 def valid_case() -> dict[str, object]:
     return {
         "case_id": "CASE_001",
-        "case_version": "1.1",
+        "case_version": "1.2",
+        "statistical_cluster_id": "gmv_diagnosis:metric_calculation",
         "tool_contract_version": "1.0",
         "tool_contract_sha256": "b" * 64,
         "dataset_version": "v1",
@@ -227,7 +229,7 @@ def test_case_schema_rejects_unknown_enum_values(field: str, value: str) -> None
         EvaluationCase.model_validate(payload)
 
 
-@pytest.mark.parametrize("split", ["development", "holdout"])
+@pytest.mark.parametrize("split", ["development", "public_validation"])
 def test_case_schema_accepts_only_the_frozen_splits(split: str) -> None:
     payload = valid_case()
     payload["split"] = split
@@ -530,7 +532,9 @@ def test_nested_model_forbids_undeclared_fields_without_false_positive() -> None
 
 
 def test_builds_exact_balanced_traceable_case_set(tmp_path: Path) -> None:
-    cases, development_manifest, holdout_manifest = build_test_case_set(tmp_path)
+    cases, development_manifest, public_validation_manifest = build_test_case_set(
+        tmp_path
+    )
 
     assert len(cases) == 100
     assert [case.case_id for case in cases] == [
@@ -553,41 +557,42 @@ def test_builds_exact_balanced_traceable_case_set(tmp_path: Path) -> None:
     }
     assert Counter(case.split for case in cases) == {
         "development": 70,
-        "holdout": 30,
+        "public_validation": 30,
     }
     assert {
         task: Counter(case.split for case in cases if case.business_task.value == task)
         for task in BusinessTask
     } == {
-        task: Counter({"development": 14, "holdout": 6})
+        task: Counter({"development": 14, "public_validation": 6})
         for task in BusinessTask
     }
-    family_splits: dict[tuple[BusinessTask, Capability], set[str]] = {}
-    for case in cases:
-        family = (case.business_task, case.primary_capability)
-        family_splits.setdefault(family, set()).add(case.split)
-    assert all(len(splits) == 1 for splits in family_splits.values())
-    assert {
-        task: Counter(
-            next(iter(splits))
-            for (family_task, _), splits in family_splits.items()
-            if family_task is task
-        )
-        for task in BusinessTask
-    } == {
-        task: Counter({"development": 7, "holdout": 3})
-        for task in BusinessTask
+    public_validation = [
+        case for case in cases if case.split == "public_validation"
+    ]
+    assert Counter(case.primary_capability for case in public_validation) == {
+        capability: 3 for capability in Capability
+    }
+    assert Counter(case.difficulty for case in public_validation) == {
+        "easy": 9,
+        "medium": 12,
+        "hard": 9,
     }
     expected_manifests = {
         "development": development_manifest,
-        "holdout": holdout_manifest,
+        "public_validation": public_validation_manifest,
     }
     for case in cases:
         manifest = expected_manifests[case.split]
         assert case.dataset_id == manifest["dataset_id"]
         assert case.dataset_version == manifest["dataset_version"]
         assert case.generator_config_hash == manifest["config_sha256"]
-    assert development_manifest["dataset_id"] != holdout_manifest["dataset_id"]
+        assert case.statistical_cluster_id == (
+            f"{case.business_task.value}:{case.primary_capability.value}"
+        )
+    assert (
+        development_manifest["dataset_id"]
+        != public_validation_manifest["dataset_id"]
+    )
 
 
 def test_cases_bind_stable_evidence_metrics_and_capability_semantics(
@@ -605,7 +610,7 @@ def test_cases_bind_stable_evidence_metrics_and_capability_semantics(
         for metric, evidence_id in case.gold_metric_evidence.items():
             assert evidence[evidence_id].metrics[metric] == case.gold_metrics[metric]
         assert case.metadata["source_label"] == "Synthetic E-commerce Data"
-        assert case.metadata["holdout_policy"] == "final_evaluation_only"
+        assert case.metadata["validation_role"] == case.split
 
     insufficient = [
         case
@@ -674,7 +679,9 @@ def test_cases_bind_stable_evidence_metrics_and_capability_semantics(
                 assert call.parameters["product_ids"] == ["P005"]
 
 
-def test_paraphrase_variants_cannot_leak_across_splits(tmp_path: Path) -> None:
+def test_paraphrase_variants_share_an_explicit_statistical_cluster(
+    tmp_path: Path,
+) -> None:
     cases, _, _ = build_test_case_set(tmp_path)
 
     families: dict[tuple[BusinessTask, Capability], list[EvaluationCase]] = {}
@@ -687,15 +694,14 @@ def test_paraphrase_variants_cannot_leak_across_splits(tmp_path: Path) -> None:
     assert len(families) == 50
     for family_cases in families.values():
         assert {case.metadata["variant"] for case in family_cases} == {1, 2}
-        assert len({case.split for case in family_cases}) == 1
         assert len({case.metadata["semantic_family_id"] for case in family_cases}) == 1
+        assert len({case.statistical_cluster_id for case in family_cases}) == 1
 
-    semantic_family_splits: dict[str, set[str]] = {}
-    stems_by_split: dict[str, set[str]] = {"development": set(), "holdout": set()}
+    stems_by_split: dict[str, set[str]] = {
+        "development": set(),
+        "public_validation": set(),
+    }
     for case in cases:
-        semantic_family_splits.setdefault(
-            str(case.metadata["semantic_family_id"]), set()
-        ).add(case.split)
         stem = _question_stem(
             case.business_task,
             case.split,
@@ -705,12 +711,10 @@ def test_paraphrase_variants_cannot_leak_across_splits(tmp_path: Path) -> None:
         assert case.user_input.startswith(stem)
         stems_by_split[case.split].add(stem)
 
-    assert len(semantic_family_splits) == 50
-    assert all(len(splits) == 1 for splits in semantic_family_splits.values())
     cross_split_similarity = [
-        SequenceMatcher(None, development, holdout).ratio()
+        SequenceMatcher(None, development, public_validation).ratio()
         for development in stems_by_split["development"]
-        for holdout in stems_by_split["holdout"]
+        for public_validation in stems_by_split["public_validation"]
     ]
     assert max(cross_split_similarity) < 0.72
 
@@ -739,7 +743,9 @@ def test_tool_calls_have_tool_specific_parameters_and_real_distractors(
     assert len(adversarial) == 10
     for case in adversarial:
         dataset_dir = tmp_path / (
-            "development-v1" if case.split == "development" else "holdout-v1"
+            "development-v1"
+            if case.split == "development"
+            else "public-validation-v1"
         )
         products = set(
             __import__("pandas").read_parquet(dataset_dir / "products.parquet")[
@@ -826,15 +832,18 @@ def test_generator_rejects_parameters_that_diverge_from_the_yaml_contract(
         encoding="utf-8",
     )
     development_dir = tmp_path / "development-v1"
-    holdout_dir = tmp_path / "holdout-v1"
+    public_validation_dir = tmp_path / "public-validation-v1"
     build_snapshot("configs/data/synthetic_v1.yaml", development_dir)
-    build_snapshot("configs/data/synthetic_holdout_v1.yaml", holdout_dir)
+    build_snapshot(
+        "configs/data/synthetic_public_validation_v1.yaml",
+        public_validation_dir,
+    )
 
     with pytest.raises(
         ValueError,
         match=r"query_sales parameters do not match tool contract.*include_refunds",
     ):
-        build_cases(development_dir, holdout_dir, changed_contract)
+        build_cases(development_dir, public_validation_dir, changed_contract)
 
 
 def test_difficulty_is_ranked_by_recorded_complexity_with_frozen_distribution(
@@ -937,7 +946,9 @@ def test_every_gold_metric_is_reachable_from_expected_tool_path(tmp_path: Path) 
 def test_jsonl_and_manifest_are_reproducible_and_do_not_leak_config(
     tmp_path: Path,
 ) -> None:
-    cases, development_manifest, holdout_manifest = build_test_case_set(tmp_path)
+    cases, development_manifest, public_validation_manifest = build_test_case_set(
+        tmp_path
+    )
     first_path = tmp_path / "first"
     second_path = tmp_path / "second"
 
@@ -949,14 +960,20 @@ def test_jsonl_and_manifest_are_reproducible_and_do_not_leak_config(
     ).read_bytes()
     assert first_manifest == second_manifest
     assert first_manifest["case_count"] == 100
-    assert first_manifest["split_counts"] == {"development": 70, "holdout": 30}
+    assert first_manifest["split_counts"] == {
+        "development": 70,
+        "public_validation": 30,
+    }
     assert first_manifest["datasets"]["development"]["dataset_id"] == (
         development_manifest["dataset_id"]
     )
-    assert first_manifest["datasets"]["holdout"]["dataset_id"] == (
-        holdout_manifest["dataset_id"]
+    assert first_manifest["datasets"]["public_validation"]["dataset_id"] == (
+        public_validation_manifest["dataset_id"]
     )
     assert first_manifest["split_strategy"]["cross_split_dataset_isolation"] is True
+    assert first_manifest["split_strategy"]["statistical_unit"] == (
+        "statistical_cluster_id"
+    )
     assert first_manifest["jsonl_sha256"]
     assert first_manifest["case_set_id"]
     assert json.loads(
@@ -990,10 +1007,10 @@ def test_committed_case_snapshot_is_frozen_from_both_configs(tmp_path: Path) -> 
     assert (rebuilt_path / "manifest.json").read_bytes() == (
         committed_path / "manifest.json"
     ).read_bytes()
-    assert rebuilt_manifest["case_set_id"] == "35d8734343a1492d"
+    assert rebuilt_manifest["case_set_id"] == "ecebfe8b691271fd"
     assert (
         rebuilt_manifest["jsonl_sha256"]
-        == "4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea"
+        == "f32e7822ca9fa7b30fee1ff2017cb4d87d7503a4c49187dfa7c475ca282cfa03"
     )
 
     split_difficulty_mapping = "\n".join(
@@ -1001,7 +1018,7 @@ def test_committed_case_snapshot_is_frozen_from_both_configs(tmp_path: Path) -> 
     ).encode()
     assert (
         sha256(split_difficulty_mapping).hexdigest()
-        == "9a2f50c32676a09dff480f65044f8ce69b04426661ed20e92aa637534ee1c51f"
+        == "414f9d77a68db37013278f754f5456242f4ac392c5d8a3453aa00488686e3aa1"
     )
 
 

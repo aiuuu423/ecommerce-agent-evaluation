@@ -19,18 +19,18 @@
     "tool_selection": 10
   },
   "case_count": 100,
-  "case_schema_version": "1.1",
-  "case_set_id": "35d8734343a1492d",
+  "case_schema_version": "1.2",
+  "case_set_id": "ecebfe8b691271fd",
   "datasets": {
     "development": {
       "dataset_id": "e1e81533c25e03e5",
       "dataset_version": "v1",
       "generator_config_hash": "f869b9caaa62b5db69c14b0ff5044eb913222f1da623631085cea197e578ab72"
     },
-    "holdout": {
+    "public_validation": {
       "dataset_id": "c17d4926cfa7cb26",
-      "dataset_version": "holdout-v1",
-      "generator_config_hash": "1fd16051f0a96cc1b900cd875d5c71d3de14a9d9b9e481f7efb84b069454b8f6"
+      "dataset_version": "public-validation-v1",
+      "generator_config_hash": "a448b7f3c2b1230c8a6c1f0c3709e4a83a7ad54fc17571336197ccc2245ac401"
     }
   },
   "difficulty_counts": {
@@ -38,18 +38,26 @@
     "hard": 30,
     "medium": 40
   },
-  "jsonl_sha256": "4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea",
+  "jsonl_sha256": "f32e7822ca9fa7b30fee1ff2017cb4d87d7503a4c49187dfa7c475ca282cfa03",
   "source_label": "Synthetic E-commerce Data",
   "split_counts": {
     "development": 70,
-    "holdout": 30
+    "public_validation": 30
   },
   "split_strategy": {
+    "cross_split_cluster_isolation": false,
     "cross_split_dataset_isolation": true,
-    "development_families_per_task": 7,
-    "holdout_families_per_task": 3,
-    "unit": "business_task_primary_capability_family",
-    "version": "split-v1"
+    "development_cases_per_task": 14,
+    "public_validation_cases_per_capability": 3,
+    "public_validation_cases_per_task": 6,
+    "public_validation_difficulty_counts": {
+      "easy": 9,
+      "hard": 9,
+      "medium": 12
+    },
+    "statistical_unit": "statistical_cluster_id",
+    "unit": "case",
+    "version": "split-v2"
   },
   "tool_contract": {
     "sha256": "471e0f09d2a609d3f8799565020cc635f201dd2e95fb33e1a170c256d9e944cb",

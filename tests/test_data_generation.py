@@ -520,8 +520,11 @@ def test_phase1_clean_build_matches_committed_sha256_baseline(tmp_path: Path) ->
         "development": json.loads(
             (output_root / "synthetic/v1/manifest.json").read_text(encoding="utf-8")
         ),
-        "holdout": json.loads(
-            (output_root / "synthetic/holdout-v1/manifest.json").read_text(
+        "public_validation": json.loads(
+            (
+                output_root
+                / "synthetic/public-validation-v1/manifest.json"
+            ).read_text(
                 encoding="utf-8"
             )
         ),
@@ -535,7 +538,9 @@ def test_phase1_clean_build_matches_committed_sha256_baseline(tmp_path: Path) ->
     assert manifests["development"]["dataset_id"] == baseline["dataset_ids"][
         "development"
     ]
-    assert manifests["holdout"]["dataset_id"] == baseline["dataset_ids"]["holdout"]
+    assert manifests["public_validation"]["dataset_id"] == baseline["dataset_ids"][
+        "public_validation"
+    ]
     assert manifests["cases"]["case_set_id"] == baseline["case_set_id"]
 
     expected_hashes = {
@@ -545,7 +550,7 @@ def test_phase1_clean_build_matches_committed_sha256_baseline(tmp_path: Path) ->
         path
         for relative_directory in (
             Path("synthetic/v1"),
-            Path("synthetic/holdout-v1"),
+            Path("synthetic/public-validation-v1"),
             Path("evaluation_cases/v1"),
         )
         for path in (output_root / relative_directory).iterdir()

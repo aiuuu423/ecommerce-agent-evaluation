@@ -3,38 +3,38 @@
   "artifacts": [
     {
       "path": "evaluation_cases/v1/cases.jsonl",
-      "sha256": "4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea"
+      "sha256": "f32e7822ca9fa7b30fee1ff2017cb4d87d7503a4c49187dfa7c475ca282cfa03"
     },
     {
       "path": "evaluation_cases/v1/manifest.json",
-      "sha256": "2325f9802f8298abc61ca1b0dba9e32d88bf1a350837011ae2f5e177a39a4e53"
+      "sha256": "9396ce3a86175874d9846bc5c34490e73cdb9cee612c487900c4e1b6c1eeb489"
     },
     {
-      "path": "synthetic/holdout-v1/customers.parquet",
+      "path": "synthetic/public-validation-v1/customers.parquet",
       "sha256": "641c6d1a0a57ab07b2ba2e5c309c089b01abb36b91448268679736f415a99a75"
     },
     {
-      "path": "synthetic/holdout-v1/data_quality_report.json",
+      "path": "synthetic/public-validation-v1/data_quality_report.json",
       "sha256": "12524fd444ef9dc99a06c7001bca51d57b3ecadf30c99c2fc182825af5f4f166"
     },
     {
-      "path": "synthetic/holdout-v1/manifest.json",
-      "sha256": "8ee31b681015ef0b3dd4f7d0c5f59b7c036b14a367756160029d4a11d8d7e8e6"
+      "path": "synthetic/public-validation-v1/manifest.json",
+      "sha256": "9196c6b557b1b99bf126882bec23ed763421ed69ad54b925cc121ef0aaaab7a5"
     },
     {
-      "path": "synthetic/holdout-v1/marketing.parquet",
+      "path": "synthetic/public-validation-v1/marketing.parquet",
       "sha256": "acc5e39b6d41711023405b0327844d38ed0695740e5bdd293cd70e0500355f70"
     },
     {
-      "path": "synthetic/holdout-v1/orders.parquet",
+      "path": "synthetic/public-validation-v1/orders.parquet",
       "sha256": "55816ea07793f0e89f9e150055d8652485ed034fe7a9c86e2715446efb4ddf58"
     },
     {
-      "path": "synthetic/holdout-v1/products.parquet",
+      "path": "synthetic/public-validation-v1/products.parquet",
       "sha256": "2fa24e7a56276c0528fae5f229cc4619bcebbed9bb34670814e37c5b2f0fb5a9"
     },
     {
-      "path": "synthetic/holdout-v1/traffic.parquet",
+      "path": "synthetic/public-validation-v1/traffic.parquet",
       "sha256": "257d489d4a12c0eac343a7e1c1f0b3733bf4581d5d13f8d3f0fca9208f2f832f"
     },
     {
@@ -47,7 +47,7 @@
     },
     {
       "path": "synthetic/v1/manifest.json",
-      "sha256": "42b8632c05b50a86635200f6e86a0309dc6854bee3800e887f7cca33e8afd8b7"
+      "sha256": "b2ad674085eb774e2eca389eb1eeb7c3902ae8d043c9e66eab465f3b2220c3cd"
     },
     {
       "path": "synthetic/v1/marketing.parquet",
@@ -66,10 +66,10 @@
       "sha256": "7be9637275b5d6e98a857da64c1a28dab1adf245fd20a19e5136af76733c307e"
     }
   ],
-  "case_set_id": "35d8734343a1492d",
+  "case_set_id": "ecebfe8b691271fd",
   "dataset_ids": {
     "development": "e1e81533c25e03e5",
-    "holdout": "c17d4926cfa7cb26"
+    "public_validation": "c17d4926cfa7cb26"
   },
-  "schema_version": "1.0"
+  "schema_version": "1.1"
 }

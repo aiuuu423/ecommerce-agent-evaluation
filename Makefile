@@ -1,6 +1,6 @@
 PYTHON ?= python3
 DEVELOPMENT_CONFIG ?= configs/data/synthetic_v1.yaml
-HOLDOUT_CONFIG ?= configs/data/synthetic_holdout_v1.yaml
+PUBLIC_VALIDATION_CONFIG ?= configs/data/synthetic_public_validation_v1.yaml
 TOOL_CONTRACT ?= configs/evaluation/tool_contract_v1.yaml
 PHASE1_OUTPUT_ROOT ?= data
 
@@ -30,7 +30,7 @@ lint: check-python
 phase1-data: check-python
 	$(PYTHON) -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
-		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
 		--output-root "$(PHASE1_OUTPUT_ROOT)" \
 		--stage data
@@ -38,7 +38,7 @@ phase1-data: check-python
 phase1-cases: check-python
 	$(PYTHON) -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
-		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
 		--output-root "$(PHASE1_OUTPUT_ROOT)" \
 		--stage cases
@@ -46,7 +46,7 @@ phase1-cases: check-python
 phase1: check-python
 	$(PYTHON) -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
-		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
 		--output-root "$(PHASE1_OUTPUT_ROOT)" \
 		--stage all

@@ -254,6 +254,7 @@ generator_config + seed
 
 - `case_id`
 - `case_version`
+- `statistical_cluster_id`
 - `business_task`
 - `capability_tags`
 - `difficulty`
@@ -273,6 +274,11 @@ generator_config + seed
 首批目标为 100 Cases；完成质量检查和覆盖分析后扩充到 200 Cases。
 
 Ground Truth 优先由 SQL 和指标函数生成。自然语言参考答案不能作为唯一评分依据。
+
+冻结 Case 使用 Development/Public Validation `70/30` Split：每个业务任务固定
+`14/6`，Public Validation 十类主要能力各 `3` 个 Case，难度固定为
+easy/medium/hard `9/12/9`。同一业务任务与主要能力的复述变体共享
+`statistical_cluster_id`；Public Validation 是公开验证集，不是盲测。
 
 ## 8. Agent 版本设计
 
@@ -406,7 +412,8 @@ Error Shift 分析同时回答：
 
 ## 11. 统计验证
 
-因为 V1/V2 使用相同 Cases，优先使用配对方法：
+因为 V1/V2 使用相同 Cases，优先使用配对方法，并以 `statistical_cluster_id`
+作为统计抽样、Bootstrap 和有效样本量计算的基本单位：
 
 - 二元结果：Exact McNemar Test。
 - 成功率或比例差：Paired Bootstrap Confidence Interval。
@@ -428,6 +435,10 @@ Error Shift 分析同时回答：
 统计不显著时必须如实展示。多个指标的探索性比较要明确多重比较风险。
 
 Mock 模式主要验证系统确定性。Real LLM 模式通过 `n_repeats` 记录重复运行；若预算只允许单次运行，必须说明未充分评估模型输出方差。
+
+Public Validation 可用于 V1/V2 开发与选择，不能作为未见数据上的最终泛化证据。
+Optimized V2 的方案、Prompt、实现与评分协议冻结后，才生成此前未见的 Final Holdout；
+Final Holdout 生成前不得查看其 Case 或 Gold，项目也不得把 Public Validation 结果称为盲测。
 
 ## 12. 实验可复现协议
 

@@ -6,7 +6,7 @@
 
 状态：`Completed / Awaiting Review`
 
-Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout 数据快照与
+Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Validation 数据快照与
 100 个冻结 Evaluation Cases；三个 Makefile Phase 1 目标统一委托单一 CLI，并从配置的
 `dataset_version` 动态推导输出目录；项目元数据仅公开 `build-phase1` 入口。快照身份绑定
 生成器源码，跨平台文件锁与只读数据探索 Notebook 已完成真实执行验证。
@@ -28,11 +28,13 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - [x] 创建 Phase 0 设计文档。
 - [x] 用户批准 Phase 0 书面设计。
 - [x] 创建 Phase 1 原子化实施计划。
-- [x] 生成并验证 Development 与 Holdout 两套独立 Synthetic Data 快照。
-- [x] 冻结 100 个 Evaluation Cases（每任务 14/6 Split、每能力 10）。
+- [x] 生成并验证 Development 与 Public Validation 两套独立 Synthetic Data 快照。
+- [x] 冻结 100 个 Evaluation Cases（每任务 14/6 Split；Public Validation 十类能力各
+  3，难度 9/12/9）。
+- [x] 增加 `statistical_cluster_id`；统计推断按 cluster 计算。
 - [x] 版本化评测工具契约并修正 GMV、Next-week 与 Adversarial 工具路径。
 - [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
-- [x] 建立只读数据探索 Notebook，并隔离 Holdout 查询句柄。
+- [x] 建立只读数据探索 Notebook，并隔离 Public Validation 查询句柄。
 - [x] 建立统一 Phase 1 CLI 与可覆盖输出根目录的 Makefile 入口。
 - [x] 仅公开 `build-phase1 = app.data.phase1:main` console script，并验证三个 Makefile
   目标继续委托统一 CLI。
@@ -64,7 +66,8 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 ## Known Issues
 
 - Synthetic Data 和 Evaluation Cases 为模拟数据，只用于受控评测。
-- Holdout 仅用于最终评测；开发过程不得读取其 Gold 内容调优 Agent。
+- Public Validation 是公开开发验证集，不是盲测；V2 冻结后才生成此前未见的
+  Final Holdout。
 - Parquet 字节一致性要求使用锁定依赖中的相同 Pandas/PyArrow 写入器版本。
 - Real LLM provider、具体模型和预算尚未确定；不影响 Mock 路径设计。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
@@ -88,14 +91,15 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Holdout �
 - Development Dataset ID：`e1e81533c25e03e5`。
 - Development 行数：products `40`、customers `300`、traffic `4,800`、
   marketing `4,800`、orders `26,941`。
-- Holdout Dataset ID：`c17d4926cfa7cb26`。
-- Holdout 行数：products `40`、customers `300`、traffic `4,800`、
+- Public Validation Dataset ID：`c17d4926cfa7cb26`。
+- Public Validation 行数：products `40`、customers `300`、traffic `4,800`、
   marketing `4,800`、orders `26,790`。
 - Generator Source SHA-256：
-  `cdbc078dca3b30e7d00552e275d22171868658e8dd9c805969164e13f56722f0`。
-- Case Set ID：`35d8734343a1492d`；JSONL SHA-256：
-  `4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea`。
-- Cases：`100`，Development/Holdout Split 为 `70/30`。
+  `bb07f7c17d8b339cbd4eb5b393e5eb73e49dfa6d781ba27b957374af33af2262`。
+- Case Set ID：`ecebfe8b691271fd`；JSONL SHA-256：
+  `f32e7822ca9fa7b30fee1ff2017cb4d87d7503a4c49187dfa7c475ca282cfa03`。
+- Cases：`100`，Development/Public Validation Split 为 `70/30`；每任务 `14/6`，
+  Public Validation 十类能力各 `3`、难度 `9/12/9`。
 - Gold 独立性与端到端复现定向测试：`2 passed`。
 - Console script 唯一性与 Makefile 统一 CLI 委托定向测试：`5 passed`。
 - 全量测试：`357 passed`。

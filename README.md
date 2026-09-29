@@ -25,7 +25,7 @@ Phase 1 的文件锁使用锁定版本的 `filelock`，支持 Linux、macOS 和 
 `pip-tools` 的 Python 3.11+ 环境运行 `make PYTHON=python3.12 lock`，审阅 lock 文件差异后提交。
 
 `make phase1-data`、`make phase1-cases` 和 `make phase1` 全部委托统一 CLI
-`python -m app.data.phase1`。CLI 从 Development 与 Holdout 配置的 `dataset_version`
+`python -m app.data.phase1`。CLI 从 Development 与 Public Validation 配置的 `dataset_version`
 动态推导数据目录，并以 Development 的 `dataset_version` 推导 Evaluation Cases 目录；
 不要求版本名为 `v1`。若要在干净临时目录中复现且不触碰冻结产物，可覆盖输出根目录：
 
@@ -38,7 +38,7 @@ make PYTHON=python3.12 PHASE1_OUTPUT_ROOT=/tmp/phase1-clean phase1
 ```bash
 python3.12 -m app.data.phase1 \
   --development-config configs/data/synthetic_v1.yaml \
-  --holdout-config configs/data/synthetic_holdout_v1.yaml \
+  --public-validation-config configs/data/synthetic_public_validation_v1.yaml \
   --tool-contract configs/evaluation/tool_contract_v1.yaml \
   --output-root /tmp/phase1-clean
 ```
@@ -50,7 +50,7 @@ python3.12 -m app.data.phase1 \
 
 ## Phase 1 产物
 
-| 产物 | Development | Holdout |
+| 产物 | Development | Public Validation |
 |---|---:|---:|
 | Dataset ID | `e1e81533c25e03e5` | `c17d4926cfa7cb26` |
 | products | 40 | 40 |
@@ -62,10 +62,14 @@ python3.12 -m app.data.phase1 \
 - 两套五表 Parquet 快照均包含 Dataset Manifest、文件哈希与数据质量报告。
 - 独立 SHA-256 基线记录 16 个 Phase 1 产物的相对路径、哈希、Dataset IDs 与
   Case Set ID；端到端测试使用临时干净构建与该提交基线比较。
-- Case Set ID 为 `35d8734343a1492d`，共 100 个 Cases，Development/Holdout 为
-  `70/30`，JSONL SHA-256 为
-  `4204ca993981554869e1f5627610846a3687cb9b9a7aea299644ba1b2f9484ea`。
-- Holdout 只用于最终评测；开发过程不得读取其 Gold 内容调优 Agent。
+- Case Set 共 100 个 Cases，Development/Public Validation 为 `70/30`；每个业务任务
+  固定 `14/6`，Public Validation 中十类能力各 `3`，难度分布为 `9/12/9`。
+- `statistical_cluster_id` 将同一业务任务与主要能力下的复述变体归入同一统计簇。
+  置信区间、显著性检验与有效样本量必须按 cluster 计算，不得把同簇 Case 当作独立样本。
+- Public Validation 是公开、可反复使用的开发验证集，不是盲测，也不得称为盲测。
+  只有在 Optimized V2 方案与实现冻结后，才生成此前未见的 Final Holdout，用于最终确认。
+- 冻结产物的 Case Set ID 与 SHA-256 见
+  `data/synthetic/phase1_sha256_baseline.json`。
 - Phase 1 不需要 API Key，尚未接入真实模型或运行 Agent。Baseline、Optimized、
   A/B Metrics、Error Analysis、Statistical Validation、Latency 均为
   `Pending / Not Run`，Token Usage 与 Cost 为 `Unavailable`。

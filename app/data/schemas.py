@@ -231,7 +231,11 @@ class GoldEvidence(EvaluationModel):
 
 class EvaluationCase(EvaluationModel):
     case_id: str = Field(pattern=r"^CASE_[0-9]{3}$")
-    case_version: Literal["1.1"]
+    case_version: Literal["1.2"]
+    statistical_cluster_id: str = Field(
+        min_length=1,
+        pattern=r"^[a-z_]+:[a-z_]+$",
+    )
     tool_contract_version: str = Field(min_length=1)
     tool_contract_sha256: Sha256Hex
     dataset_version: str = Field(min_length=1)
@@ -241,7 +245,7 @@ class EvaluationCase(EvaluationModel):
     primary_capability: Capability
     capability_tags: list[Capability] = Field(min_length=1)
     difficulty: Literal["easy", "medium", "hard"]
-    split: Literal["development", "holdout"]
+    split: Literal["development", "public_validation"]
     user_input: str = Field(min_length=5)
     expected_tool_calls: list[ExpectedToolCall] = Field(min_length=1)
     allowed_alternatives: list[list[ExpectedToolCall]]
@@ -267,6 +271,15 @@ class EvaluationCase(EvaluationModel):
 
     @model_validator(mode="after")
     def validate_case_contract(self) -> "EvaluationCase":
+        expected_cluster_id = (
+            f"{self.business_task.value}:{self.primary_capability.value}"
+        )
+        if self.statistical_cluster_id != expected_cluster_id:
+            raise ValueError(
+                "statistical_cluster_id must identify the business task and "
+                "primary capability cluster"
+            )
+
         tags = self.capability_tags
         if len(tags) != len(set(tags)) or self.primary_capability not in tags:
             raise ValueError(

@@ -39,7 +39,7 @@ def test_all_make_phase1_targets_delegate_to_the_single_phase1_entrypoint() -> N
 
 def test_non_v1_configs_drive_all_phase1_output_directories(tmp_path: Path) -> None:
     development_config = tmp_path / "development.yaml"
-    holdout_config = tmp_path / "holdout.yaml"
+    public_validation_config = tmp_path / "public_validation.yaml"
     output_root = tmp_path / "artifacts"
     _versioned_config(
         ROOT / "configs/data/synthetic_v1.yaml",
@@ -47,9 +47,9 @@ def test_non_v1_configs_drive_all_phase1_output_directories(tmp_path: Path) -> N
         "development-v2",
     )
     _versioned_config(
-        ROOT / "configs/data/synthetic_holdout_v1.yaml",
-        holdout_config,
-        "holdout-v2",
+        ROOT / "configs/data/synthetic_public_validation_v1.yaml",
+        public_validation_config,
+        "public-validation-v2",
     )
 
     completed = subprocess.run(
@@ -57,7 +57,7 @@ def test_non_v1_configs_drive_all_phase1_output_directories(tmp_path: Path) -> N
             "make",
             f"PYTHON={sys.executable}",
             f"DEVELOPMENT_CONFIG={development_config}",
-            f"HOLDOUT_CONFIG={holdout_config}",
+            f"PUBLIC_VALIDATION_CONFIG={public_validation_config}",
             f"PHASE1_OUTPUT_ROOT={output_root}",
             "phase1",
         ],
@@ -73,8 +73,8 @@ def test_non_v1_configs_drive_all_phase1_output_directories(tmp_path: Path) -> N
             encoding="utf-8"
         )
     )
-    holdout_manifest = json.loads(
-        (output_root / "synthetic/holdout-v2/manifest.json").read_text(
+    public_validation_manifest = json.loads(
+        (output_root / "synthetic/public-validation-v2/manifest.json").read_text(
             encoding="utf-8"
         )
     )
@@ -85,10 +85,15 @@ def test_non_v1_configs_drive_all_phase1_output_directories(tmp_path: Path) -> N
     )
 
     assert development_manifest["dataset_version"] == "development-v2"
-    assert holdout_manifest["dataset_version"] == "holdout-v2"
+    assert (
+        public_validation_manifest["dataset_version"]
+        == "public-validation-v2"
+    )
     assert case_manifest["datasets"]["development"]["dataset_version"] == (
         "development-v2"
     )
-    assert case_manifest["datasets"]["holdout"]["dataset_version"] == "holdout-v2"
+    assert case_manifest["datasets"]["public_validation"]["dataset_version"] == (
+        "public-validation-v2"
+    )
     assert not (output_root / "synthetic/v1").exists()
     assert not (output_root / "evaluation_cases/v1").exists()

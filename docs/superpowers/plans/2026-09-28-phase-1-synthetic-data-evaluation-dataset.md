@@ -4,7 +4,7 @@
 
 **Goal:** 构建可复现、明确标记为 Synthetic 的五表电商数据快照，并从冻结数据与独立 Gold 查询程序化生成首批 100 个 Evaluation Cases。
 
-**Architecture:** Phase 1 分为两个顺序里程碑。里程碑 A 使用独立的 Development/Holdout
+**Architecture:** Phase 1 分为两个顺序里程碑。里程碑 A 使用独立的 Development/Public Validation
 版本化 YAML 配置和固定 Seed 生成 Pandas DataFrame，经过 Pydantic Schema、业务不变量与
 独立指标检查后，以跨平台文件锁和不可变目录原子发布 Parquet 与 Manifest；里程碑 B 使用
 DuckDB 只读查询两套冻结快照，生成带 Gold Evidence、成功门控和开发集/保留集标签的
@@ -68,7 +68,7 @@ app/data/metrics.py
 app/data/phase1.py
 app/data/schemas.py
 app/data/validation.py
-configs/data/synthetic_holdout_v1.yaml
+configs/data/synthetic_public_validation_v1.yaml
 configs/data/synthetic_v1.yaml
 configs/evaluation/tool_contract_v1.yaml
 data/evaluation_cases/.gitkeep
@@ -112,13 +112,13 @@ PROJECT_STATUS.md
 data/synthetic/{development_dataset_version}/*.parquet
 data/synthetic/{development_dataset_version}/manifest.json
 data/synthetic/{development_dataset_version}/data_quality_report.json
-data/synthetic/{holdout_dataset_version}/*.parquet
-data/synthetic/{holdout_dataset_version}/manifest.json
-data/synthetic/{holdout_dataset_version}/data_quality_report.json
+data/synthetic/{public_validation_dataset_version}/*.parquet
+data/synthetic/{public_validation_dataset_version}/manifest.json
+data/synthetic/{public_validation_dataset_version}/data_quality_report.json
 ```
 
 两套数据快照目录由各自配置的 `dataset_version` 动态推导，默认分别为
-`data/synthetic/v1/` 与 `data/synthetic/holdout-v1/`。数据快照不作为手写源文件提交，
+`data/synthetic/v1/` 与 `data/synthetic/public-validation-v1/`。数据快照不作为手写源文件提交，
 必须能由配置和代码重新构建。默认 Cases 发布到由 Development 版本推导的
 `data/evaluation_cases/v1/`，其中冻结的 `cases.jsonl` 与 `manifest.json` 随仓库提交；
 非默认版本仍写入相应的动态版本目录。正式发布时是否附带数据快照，在 Phase 9 的发布
@@ -133,12 +133,12 @@ data/synthetic/{holdout_dataset_version}/data_quality_report.json
   `build-phase1 = app.data.phase1:main`。`make phase1-data`、`make phase1-cases` 和
   `make phase1` 均调用 `python -m app.data.phase1`，通过 `--stage data|cases|all`
   选择阶段；生成器和 Case 生成器仅作为内部 Python 模块使用。
-- **动态版本目录：** 统一 CLI 从 Development 与 Holdout 配置各自的
+- **动态版本目录：** 统一 CLI 从 Development 与 Public Validation 配置各自的
   `dataset_version` 推导 `data/synthetic/{version}/`，并从 Development 版本推导
   `data/evaluation_cases/{development-version}/`。非 `v1` 配置已有端到端测试覆盖。
 - **冻结 Cases：** 默认配置对应的 100 个 Cases 固定提交在
   `data/evaluation_cases/v1/cases.jsonl` 与 `manifest.json`，且目录不可变；Development
-  与 Holdout 分别绑定独立数据快照。
+  与 Public Validation 分别绑定独立数据快照。
 - **跨平台并发保护：** 数据快照与 Cases 发布统一使用锁定依赖 `filelock`，锁文件位于
   目标目录同级，支持 Linux、macOS 与 Windows；发布使用同文件系统内的暂存目录和
   `os.rename`。
@@ -185,9 +185,11 @@ data/synthetic/{holdout_dataset_version}/data_quality_report.json
 - 五类业务任务：每类 20。
 - 十类能力标签：每类 10 个 Primary Capability。
 - 难度：`easy=30`、`medium=40`、`hard=30`。
-- Split：`development=70`、`holdout=30`。
-- 每个业务任务在 development 中 14 个、holdout 中 6 个。
-- Holdout 只能用于最终评测，不能用于 Prompt 优化。
+- Split：`development=70`、`public_validation=30`。
+- 每个业务任务在 development 中 14 个、public_validation 中 6 个。
+- Public Validation 十类主要能力各 3 个 Case，难度 easy/medium/hard 为 9/12/9。
+- Public Validation 是公开验证集，不是盲测；统计推断以 `statistical_cluster_id`
+  为单位。Optimized V2 冻结后再生成此前未见的 Final Holdout。
 
 ---
 
@@ -328,7 +330,7 @@ LLM_MODEL=
 ```makefile
 PYTHON ?= python3
 DEVELOPMENT_CONFIG ?= configs/data/synthetic_v1.yaml
-HOLDOUT_CONFIG ?= configs/data/synthetic_holdout_v1.yaml
+PUBLIC_VALIDATION_CONFIG ?= configs/data/synthetic_public_validation_v1.yaml
 TOOL_CONTRACT ?= configs/evaluation/tool_contract_v1.yaml
 PHASE1_OUTPUT_ROOT ?= data
 
@@ -354,7 +356,7 @@ lint: check-python
 phase1-data: check-python
 	$(PYTHON) -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
-		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
 		--output-root "$(PHASE1_OUTPUT_ROOT)" \
 		--stage data
@@ -362,7 +364,7 @@ phase1-data: check-python
 phase1-cases: check-python
 	$(PYTHON) -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
-		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
 		--output-root "$(PHASE1_OUTPUT_ROOT)" \
 		--stage cases
@@ -370,7 +372,7 @@ phase1-cases: check-python
 phase1: check-python
 	$(PYTHON) -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
-		--holdout-config "$(HOLDOUT_CONFIG)" \
+		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
 		--output-root "$(PHASE1_OUTPUT_ROOT)" \
 		--stage all
@@ -1505,7 +1507,7 @@ make PYTHON=python3 phase1-data
 Expected:
 
 ```text
-Built Phase 1 data artifacts: development=e1e81533c25e03e5, holdout=c17d4926cfa7cb26
+Built Phase 1 data artifacts: development=e1e81533c25e03e5, public_validation=c17d4926cfa7cb26
 ```
 
 随后检查：
@@ -1765,7 +1767,8 @@ class GoldEvidence(StrictModel):
 
 class EvaluationCase(StrictModel):
     case_id: str = Field(pattern=r"^CASE_\d{3}$")
-    case_version: str
+    case_version: Literal["1.2"]
+    statistical_cluster_id: str
     dataset_version: str
     dataset_id: str = Field(min_length=16, max_length=16)
     generator_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1773,7 +1776,7 @@ class EvaluationCase(StrictModel):
     primary_capability: Capability
     capability_tags: list[Capability] = Field(min_length=1)
     difficulty: Literal["easy", "medium", "hard"]
-    split: Literal["development", "holdout"]
+    split: Literal["development", "public_validation"]
     user_input: str = Field(min_length=5)
     expected_tool_calls: list[ExpectedToolCall] = Field(min_length=1)
     allowed_alternatives: list[list[ExpectedToolCall]]
@@ -2309,7 +2312,7 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 ### Task 11: 生成并冻结 100 个 Evaluation Cases
 
 **Files:**
-- Create: `configs/data/synthetic_holdout_v1.yaml`
+- Create: `configs/data/synthetic_public_validation_v1.yaml`
 - Create: `configs/evaluation/tool_contract_v1.yaml`
 - Create: `data/evaluation_cases/v1/cases.jsonl`
 - Create: `data/evaluation_cases/v1/manifest.json`
@@ -2320,10 +2323,15 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 
 **Task 11 冻结约束（2026-09-28 重构同步）：**
 
-- Development 与 Holdout 分别由 `synthetic_v1.yaml`、`synthetic_holdout_v1.yaml`
+- Development 与 Public Validation 分别由 `synthetic_v1.yaml`、`synthetic_public_validation_v1.yaml`
   生成独立不可变数据快照；Case 必须按 Split 绑定对应 Dataset ID、版本和配置哈希。
-- Case 总量固定 100；每个业务任务固定 Development 14 / Holdout 6；每个能力固定
-  10。按 `business_task + primary_capability` 家族切分，禁止同义改写跨 Split。
+- Case 总量固定 100；每个业务任务固定 Development 14 / Public Validation 6；全集每个能力
+  固定 10，Public Validation 十类能力各 3，难度固定为 9/12/9。
+- 每个 Case 顶层记录 `statistical_cluster_id`；同一
+  `business_task + primary_capability` 的复述变体共享 cluster。统计分析按 cluster
+  聚合或重采样，不把同簇 Case 当作独立样本。
+- Public Validation 是公开验证集，不是盲测。Optimized V2 冻结后才生成此前未见的
+  Final Holdout。
 - 商品列表类问题固定显式要求 `Top-3`；`gold_metrics` 与
   `gold_metric_evidence` 必须覆盖每条 Gold Evidence 中的全部指标。
 - `configs/evaluation/tool_contract_v1.yaml` 冻结工具路径和参数契约，但本 Task
@@ -2371,7 +2379,7 @@ def test_builds_exact_balanced_case_set(tmp_path) -> None:
     }
     assert Counter(case.split for case in cases) == {
         "development": 70,
-        "holdout": 30,
+        "public_validation": 30,
     }
 
 
@@ -2645,7 +2653,7 @@ def build_cases(dataset_dir: Path) -> list[EvaluationCase]:
         order = rng.permutation(len(payloads))
         development_indices = set(order[:14].tolist())
         for index, payload in enumerate(payloads):
-            payload["split"] = "development" if index in development_indices else "holdout"
+            payload["split"] = "development" if index in development_indices else "public_validation"
 
     cases = [EvaluationCase.model_validate(payload) for payload in raw]
     assert Counter(case.primary_capability for case in cases) == {
@@ -2683,7 +2691,7 @@ def write_cases(cases: list[EvaluationCase], output_path: Path) -> dict:
 
 
 # `write_cases` 接收不可变的版本目录并写入 `cases.jsonl` 与 `manifest.json`；
-# 公开命令由 app.data.phase1:main 统一编排 Development 与 Holdout。
+# 公开命令由 app.data.phase1:main 统一编排 Development 与 Public Validation。
 ```
 
 - [x] **Step 5: 增加防泄漏测试**
@@ -2691,7 +2699,7 @@ def write_cases(cases: list[EvaluationCase], output_path: Path) -> dict:
 追加到 `tests/test_case_generator.py`：
 
 ```python
-def test_cases_do_not_expose_anomaly_config_or_holdout_answers(tmp_path) -> None:
+def test_cases_do_not_expose_anomaly_config_or_public_validation_answers(tmp_path) -> None:
     dataset_dir = tmp_path / "v1"
     build_snapshot("configs/data/synthetic_v1.yaml", dataset_dir)
     cases = build_cases(dataset_dir)
@@ -2710,7 +2718,7 @@ Run:
 python3 -m pytest tests/test_case_generator.py -v
 python3 -m app.data.phase1 \
   --development-config configs/data/synthetic_v1.yaml \
-  --holdout-config configs/data/synthetic_holdout_v1.yaml \
+  --public-validation-config configs/data/synthetic_public_validation_v1.yaml \
   --tool-contract configs/evaluation/tool_contract_v1.yaml \
   --output-root data \
   --stage all
@@ -2719,13 +2727,13 @@ python3 -m app.data.phase1 \
 Expected:
 
 ```text
-Built Phase 1 all artifacts: development=e1e81533c25e03e5, holdout=c17d4926cfa7cb26, cases=35d8734343a1492d
+Built Phase 1 all artifacts: development=e1e81533c25e03e5, public_validation=c17d4926cfa7cb26, cases=ecebfe8b691271fd
 ```
 
 再执行：
 
 ```bash
-python3 -c "import json; from pathlib import Path; p=Path('data/evaluation_cases/v1/manifest.json'); d=json.loads(p.read_text()); assert d['case_count']==100; assert d['split_counts']=={'development':70,'holdout':30}; assert d['datasets']['development']['dataset_id'] != d['datasets']['holdout']['dataset_id']; print(d)"
+python3 -c "import json; from pathlib import Path; p=Path('data/evaluation_cases/v1/manifest.json'); d=json.loads(p.read_text()); assert d['case_count']==100; assert d['split_counts']=={'development':70,'public_validation':30}; assert d['datasets']['development']['dataset_id'] != d['datasets']['public_validation']['dataset_id']; print(d)"
 ```
 
 Expected: 输出真实 Manifest；不包含任何 Agent 效果指标。
@@ -2734,7 +2742,7 @@ Expected: 输出真实 Manifest；不包含任何 Agent 效果指标。
 
 ```bash
 git add .gitignore Makefile PROJECT_STATUS.md app/data/case_generator.py \
-  app/data/schemas.py configs/data/synthetic_holdout_v1.yaml \
+  app/data/schemas.py configs/data/synthetic_public_validation_v1.yaml \
   configs/evaluation/tool_contract_v1.yaml data/evaluation_cases/v1 \
   docs/superpowers/plans/2026-09-28-phase-1-synthetic-data-evaluation-dataset.md \
   tests/test_case_generator.py
@@ -2911,7 +2919,7 @@ def test_phase1_clean_build_matches_committed_sha256_baseline(tmp_path) -> None:
         path.relative_to(output_root).as_posix(): file_sha256(path)
         for relative_directory in (
             Path("synthetic/v1"),
-            Path("synthetic/holdout-v1"),
+            Path("synthetic/public-validation-v1"),
             Path("evaluation_cases/v1"),
         )
         for path in (output_root / relative_directory).iterdir()
@@ -3036,12 +3044,12 @@ Expected:
 - [x] 五类业务任务各 20 Cases。
 - [x] 十类 Primary Capability 各 10 Cases。
 - [x] 难度分布为 30/40/30。
-- [x] Development/Holdout 分布为 70/30。
+- [x] Development/Public Validation 分布为 70/30。
 - [x] Case 不泄漏异常配置。
 - [x] Case 与 Dataset ID 绑定。
 - [x] `build-phase1` 是唯一公开 console script。
 - [x] 三个 Makefile Phase 1 目标均委托 `app.data.phase1` 单一 CLI。
-- [x] Development、Holdout 与 Cases 目录由配置版本动态推导。
+- [x] Development、Public Validation 与 Cases 目录由配置版本动态推导。
 - [x] 默认 Cases 冻结在 `data/evaluation_cases/v1/` 并随仓库提交。
 - [x] 数据和 Case 使用跨平台 `filelock` 并发保护。
 - [x] 数据和 Case 可重复生成。
