@@ -17,6 +17,7 @@ JsonValue = TypeAliasType(
     None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"],
 )
 ProductId = Annotated[str, Field(pattern=r"^P[0-9]{3}$")]
+MAX_QUERY_WINDOW_DAYS = 366
 
 
 def _validate_json_value(value: object, path: str) -> None:
@@ -83,10 +84,16 @@ class WindowQueryInput(ToolModel):
     def valid_windows_and_products(self) -> "WindowQueryInput":
         if self.start_date > self.end_date:
             raise ValueError("start_date must be on or before end_date")
+        if (self.end_date - self.start_date).days + 1 > MAX_QUERY_WINDOW_DAYS:
+            raise ValueError("current window must be at most 366 days")
         if self.comparison_start_date > self.comparison_end_date:
             raise ValueError(
                 "comparison_start_date must be on or before comparison_end_date"
             )
+        if (
+            self.comparison_end_date - self.comparison_start_date
+        ).days + 1 > MAX_QUERY_WINDOW_DAYS:
+            raise ValueError("comparison window must be at most 366 days")
         _require_unique(self.product_ids, "product_ids")
         return self
 

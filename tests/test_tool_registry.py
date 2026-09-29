@@ -163,6 +163,69 @@ def test_every_query_window_is_ordered(model, flag, overrides) -> None:
         (QueryMarketingInput, {}),
     ],
 )
+@pytest.mark.parametrize(
+    ("start_field", "end_field"),
+    [
+        ("start_date", "end_date"),
+        ("comparison_start_date", "comparison_end_date"),
+    ],
+)
+def test_every_query_window_accepts_366_days(
+    model,
+    flag,
+    start_field,
+    end_field,
+) -> None:
+    values = {
+        **_window_arguments(),
+        **flag,
+        start_field: "2025-05-01",
+        end_field: "2026-05-01",
+    }
+
+    assert model.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "model, flag",
+    [
+        (QuerySalesInput, {"include_refunds": True}),
+        (QueryTrafficInput, {"include_missing": True}),
+        (QueryMarketingInput, {}),
+    ],
+)
+@pytest.mark.parametrize(
+    ("start_field", "end_field"),
+    [
+        ("start_date", "end_date"),
+        ("comparison_start_date", "comparison_end_date"),
+    ],
+)
+def test_every_query_window_rejects_367_days(
+    model,
+    flag,
+    start_field,
+    end_field,
+) -> None:
+    values = {
+        **_window_arguments(),
+        **flag,
+        start_field: "2025-05-01",
+        end_field: "2026-05-02",
+    }
+
+    with pytest.raises(ValidationError, match="at most 366 days"):
+        model.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "model, flag",
+    [
+        (QuerySalesInput, {"include_refunds": True}),
+        (QueryTrafficInput, {"include_missing": True}),
+        (QueryMarketingInput, {}),
+    ],
+)
 def test_all_window_query_inputs_reject_duplicate_product_ids(model, flag) -> None:
     values = {
         **_window_arguments(),

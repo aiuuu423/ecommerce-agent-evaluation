@@ -367,3 +367,32 @@ def test_query_traffic_returns_stably_sorted_period_product_rows(
         result.rows,
         key=lambda row: (row.period, row.product_id),
     )
+
+
+def test_query_traffic_empty_product_filter_covers_existing_catalog_scale(
+    catalog: Catalog,
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    product_count = catalog.execute("select count(*) from products").fetchone()
+    assert product_count is not None
+    assert product_count[0] == 40
+
+    result = registry.invoke(
+        "query_traffic",
+        {
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-30",
+            "comparison_start_date": "2026-03-02",
+            "comparison_end_date": "2026-03-31",
+            "product_ids": [],
+            "include_missing": True,
+        },
+        tool_context,
+    )
+
+    assert result.row_count == 2 * product_count[0]
+    assert {row.product_id for row in result.rows} == {
+        f"P{product_id:03d}" for product_id in range(1, product_count[0] + 1)
+    }
+    assert all(row.observed_days + row.missing_days == 30 for row in result.rows)
