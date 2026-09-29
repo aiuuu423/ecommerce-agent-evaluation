@@ -17,6 +17,18 @@ from app.tools import (
 )
 from app.tools.schemas import AnyToolResult, JsonValue, PriorToolExecution
 
+ERROR_SUMMARIES = {
+    "adapter_start_error": "Adapter initialization failed.",
+    "adapter_error": "Adapter request failed.",
+    "duplicate_call_id": "Tool call identifier was reused.",
+    "unknown_tool": "Requested tool is unavailable.",
+    "invalid_arguments": "Tool arguments failed validation.",
+    "invalid_tool_result": "Tool result failed validation.",
+    "tool_execution_error": "Tool execution failed.",
+    "duplicate_result_id": "Tool result identifier was reused.",
+    "max_steps_exceeded": "Agent step limit was exceeded.",
+}
+
 
 class TraceBuilder:
     def __init__(self) -> None:
@@ -63,11 +75,8 @@ class TraceBuilder:
                 "usage_available": usage is not None,
             }
         else:
-            call = action.tool_calls[0]
             payload = {
                 "mode": "tool_call",
-                "call_id": call.call_id,
-                "tool_name": call.name,
                 "usage_available": usage is not None,
             }
         self._append(TraceEventType.ADAPTER_RESPONSE, payload)
@@ -78,7 +87,6 @@ class TraceBuilder:
             {
                 "call_id": call.call_id,
                 "tool_name": call.name,
-                "arguments": call.arguments,
             },
         )
 
@@ -98,8 +106,11 @@ class TraceBuilder:
     def final_answer(self, answer: str) -> None:
         self._append(TraceEventType.FINAL_ANSWER, {"answer": answer})
 
-    def error(self, code: str, detail: JsonValue) -> None:
-        self._append(TraceEventType.ERROR, {"code": code, "detail": detail})
+    def error(self, code: str) -> None:
+        self._append(
+            TraceEventType.ERROR,
+            {"code": code, "summary": ERROR_SUMMARIES[code]},
+        )
 
 
 class UsageAccumulator:
@@ -139,7 +150,7 @@ def _result(
         status=status,
         final_answer=final_answer,
         prior_tool_executions=list(executions),
-        decision_trace=list(trace.events),
+        decision_trace=tuple(trace.events),
         usage=usage.result(),
     )
 
@@ -149,9 +160,8 @@ def _failed(
     executions: list[PriorToolExecution],
     usage: UsageAccumulator,
     code: str,
-    detail: JsonValue,
 ) -> RunResult:
-    trace.error(code, detail)
+    trace.error(code)
     return _result(
         status="failed",
         trace=trace,
@@ -190,13 +200,12 @@ class AgentRunner:
 
         try:
             self._adapter.start_run()
-        except Exception as exc:
+        except Exception:
             return _failed(
                 trace,
                 executions,
                 usage,
                 "adapter_start_error",
-                type(exc).__name__,
             )
 
         for _ in range(request.max_steps):
@@ -212,13 +221,12 @@ class AgentRunner:
                     untrusted_response.model_dump(mode="python"),
                     strict=True,
                 )
-            except Exception as exc:
+            except Exception:
                 return _failed(
                     trace,
                     executions,
                     usage,
                     "adapter_error",
-                    type(exc).__name__,
                 )
             trace.adapter_response(response.action, response.usage)
             usage.add(response.usage)
@@ -239,10 +247,8 @@ class AgentRunner:
                     executions,
                     usage,
                     "duplicate_call_id",
-                    tool_call.call_id,
                 )
             seen_call_ids.add(tool_call.call_id)
-            trace.tool_call(tool_call)
             context = ToolContext(
                 catalog=catalog,
                 prior_executions=tuple(executions),
@@ -260,7 +266,6 @@ class AgentRunner:
                     executions,
                     usage,
                     "unknown_tool",
-                    tool_call.name,
                 )
             except ToolInputValidationError:
                 return _failed(
@@ -268,7 +273,6 @@ class AgentRunner:
                     executions,
                     usage,
                     "invalid_arguments",
-                    tool_call.name,
                 )
             except ToolOutputValidationError:
                 return _failed(
@@ -276,15 +280,13 @@ class AgentRunner:
                     executions,
                     usage,
                     "invalid_tool_result",
-                    tool_call.name,
                 )
-            except Exception as exc:
+            except Exception:
                 return _failed(
                     trace,
                     executions,
                     usage,
                     "tool_execution_error",
-                    type(exc).__name__,
                 )
 
             if tool_result.result_id in seen_result_ids:
@@ -293,9 +295,9 @@ class AgentRunner:
                     executions,
                     usage,
                     "duplicate_result_id",
-                    tool_result.result_id,
                 )
             seen_result_ids.add(tool_result.result_id)
+            trace.tool_call(tool_call)
             executions.append(
                 PriorToolExecution(
                     call_id=tool_call.call_id,
@@ -310,5 +312,4 @@ class AgentRunner:
             executions,
             usage,
             "max_steps_exceeded",
-            request.max_steps,
         )

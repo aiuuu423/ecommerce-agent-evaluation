@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.agents import AgentRunner, RunRequest
+from app.agents.schemas import TraceEvent, TraceEventType
 from app.data.database import Catalog, open_dataset
 from app.data.generator import build_snapshot
 from app.llm import (
@@ -281,14 +282,14 @@ def test_runner_executes_tools_and_records_public_trace(catalog: Catalog) -> Non
     ]
     assert result.decision_trace[0].payload == {
         "user_input": "查看 P001",
-        "tool_names": [
+        "tool_names": (
             "calculate_metrics",
             "query_marketing",
             "query_product",
             "query_sales",
             "query_traffic",
-        ],
-        "result_ids": [],
+        ),
+        "result_ids": (),
     }
     tool_result = result.decision_trace[3].payload
     assert set(tool_result) == {
@@ -302,6 +303,80 @@ def test_runner_executes_tools_and_records_public_trace(catalog: Catalog) -> Non
     serialized = result.model_dump_json()
     for forbidden in ("thought", "sql", "/tmp/", "api_key", "gold"):
         assert forbidden not in serialized.lower()
+
+
+def test_trace_is_deeply_immutable_and_json_serializable(catalog: Catalog) -> None:
+    result = runner(
+        lambda _: call("call_0001", "query_product", {"product_ids": ["P001"]})
+    ).run(RunRequest(user_input="x", max_steps=1), catalog)
+
+    assert isinstance(result.decision_trace, tuple)
+    assert isinstance(result.decision_trace[0].payload["tool_names"], tuple)
+    with pytest.raises(ValidationError):
+        result.decision_trace[0].sequence = 99
+    with pytest.raises(TypeError):
+        result.decision_trace[0].payload["injected"] = "value"
+    with pytest.raises(TypeError):
+        result.decision_trace[0].payload["tool_names"][0] = "injected"
+
+    assert json.loads(result.model_dump_json())["decision_trace"][0]["sequence"] == 1
+
+    nested_event = TraceEvent(
+        sequence=1,
+        event_type=TraceEventType.TOOL_RESULT,
+        payload={"nested": {"items": [{"value": 1}]}},
+    )
+    nested = nested_event.payload["nested"]
+    assert not isinstance(nested, dict)
+    with pytest.raises(TypeError):
+        nested["items"][0]["value"] = 2
+    assert json.loads(nested_event.model_dump_json())["payload"] == {
+        "nested": {"items": [{"value": 1}]}
+    }
+
+
+def test_unvalidated_tool_data_and_sensitive_errors_do_not_enter_trace(
+    catalog: Catalog,
+) -> None:
+    malicious_arguments = {
+        "product_ids": ["P001"],
+        "api_key": "sk-secret",
+        "path": "/tmp/private/key",
+        "sql": "DROP TABLE sales",
+    }
+    result = runner(lambda _: call("call_0001", "query_product", malicious_arguments)).run(
+        RunRequest(user_input="x"),
+        catalog,
+    )
+
+    assert result.status == "failed"
+    assert result.decision_trace[-1].payload == {
+        "code": "invalid_arguments",
+        "summary": "Tool arguments failed validation.",
+    }
+    serialized = result.model_dump_json().lower()
+    for forbidden in ("api_key", "sk-secret", "/tmp/private/key", "drop table"):
+        assert forbidden not in serialized
+
+
+def test_tool_exception_trace_contains_only_safe_code_and_summary(catalog: Catalog) -> None:
+    error = RuntimeError(
+        "api_key=sk-secret path=/tmp/private/key sql=DROP TABLE sales"
+    )
+    result = AgentRunner(
+        registry=registry_with_raising_handler(error),
+        adapter=DeterministicAdapter(
+            lambda _: call("call_0001", "query_sales", valid_sales_arguments())
+        ),
+    ).run(RunRequest(user_input="x"), catalog)
+
+    assert result.decision_trace[-1].payload == {
+        "code": "tool_execution_error",
+        "summary": "Tool execution failed.",
+    }
+    serialized = result.model_dump_json().lower()
+    for forbidden in ("api_key", "sk-secret", "/tmp/private/key", "drop table"):
+        assert forbidden not in serialized
 
 
 def test_runner_openai_adapter_fake_transport_full_chain(catalog: Catalog) -> None:
@@ -467,7 +542,7 @@ def test_runner_rejects_duplicate_call_id_before_second_invocation(
     assert result.status == "failed"
     assert result.decision_trace[-1].payload == {
         "code": "duplicate_call_id",
-        "detail": "same",
+        "summary": "Tool call identifier was reused.",
     }
     assert invocation_count() == 1
 
@@ -490,7 +565,7 @@ def test_runner_stops_at_max_steps(catalog: Catalog) -> None:
     assert len(result.prior_tool_executions) == 2
     assert result.decision_trace[-1].payload == {
         "code": "max_steps_exceeded",
-        "detail": 2,
+        "summary": "Agent step limit was exceeded.",
     }
 
 
@@ -504,7 +579,7 @@ def test_runner_structures_start_run_exception(catalog: Catalog) -> None:
     assert result.decision_trace[-1].event_type == "error"
     assert result.decision_trace[-1].payload == {
         "code": "adapter_start_error",
-        "detail": "RuntimeError",
+        "summary": "Adapter initialization failed.",
     }
     assert "/tmp/" not in result.model_dump_json()
 
@@ -548,7 +623,7 @@ def test_runner_strictly_revalidates_untrusted_custom_adapter_response(
         assert result.status == "failed"
         assert result.prior_tool_executions == []
         assert result.decision_trace[-1].payload["code"] == "adapter_error"
-        assert result.decision_trace[-1].payload["detail"] == "ValidationError"
+        assert result.decision_trace[-1].payload["summary"] == "Adapter request failed."
         registry.invoke.assert_not_called()
 
 
