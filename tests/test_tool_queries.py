@@ -3,6 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pytest
@@ -36,6 +37,63 @@ def tool_context(catalog: Catalog) -> ToolContext:
         prior_executions=(),
         next_result_id=lambda: "result_0007",
     )
+
+
+@pytest.fixture
+def catalog_with_one_traffic_day_omitted() -> Iterator[Catalog]:
+    products = pd.DataFrame(
+        [
+            {
+                "product_id": "P001",
+                "product_name": "测试商品",
+                "category": "test",
+                "price": Decimal("10.00"),
+                "cost": Decimal("5.00"),
+                "launch_date": date(2025, 1, 1),
+            }
+        ]
+    )
+    traffic = pd.DataFrame(
+        [
+            {
+                "date": day,
+                "product_id": "P001",
+                "impressions": 100,
+                "clicks": 10,
+                "visits": 12,
+                "is_missing": False,
+            }
+            for day in (
+                date(2026, 3, 29),
+                date(2026, 3, 30),
+                date(2026, 3, 31),
+                date(2026, 4, 1),
+                date(2026, 4, 2),
+            )
+        ]
+    )
+    tables = {
+        "products": products,
+        "customers": pd.DataFrame(),
+        "traffic": traffic,
+        "marketing": pd.DataFrame(),
+        "orders": pd.DataFrame(),
+    }
+    manifest = {
+        "dataset_id": "0123456789abcdef",
+        "dataset_version": "test",
+        "source_label": "Synthetic E-commerce Data",
+        "tables": {
+            name: {"rows": len(frame)}
+            for name, frame in tables.items()
+        },
+    }
+    connection = duckdb.connect(database=":memory:")
+    for name, frame in tables.items():
+        if len(frame.columns):
+            connection.register(name, frame)
+    with Catalog(connection, tables, manifest) as opened:
+        yield opened
 
 
 @pytest.mark.parametrize(
@@ -199,3 +257,113 @@ def test_query_sales_product_filter_and_refund_switch(
         assert sum(row.gmv for row in rows) == pytest.approx(float(expected[0]))
         assert sum(row.orders for row in rows) == expected[1]
         assert sum(row.units for row in rows) == expected[2]
+
+
+def test_query_traffic_preserves_explicit_missingness_and_include_switch(
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    arguments = {
+        "start_date": "2026-04-01",
+        "end_date": "2026-04-30",
+        "comparison_start_date": "2026-03-02",
+        "comparison_end_date": "2026-03-31",
+        "product_ids": ["P005"],
+        "include_missing": True,
+    }
+
+    included = registry.invoke("query_traffic", arguments, tool_context)
+
+    assert included.columns == [
+        "period",
+        "product_id",
+        "category",
+        "impressions",
+        "clicks",
+        "visits",
+        "observed_days",
+        "missing_days",
+    ]
+    assert [(row.period, row.product_id) for row in included.rows] == [
+        ("current", "P005"),
+        ("previous", "P005"),
+    ]
+    current = included.rows[0]
+    previous = included.rows[1]
+    assert (current.observed_days, current.missing_days) == (24, 6)
+    assert (previous.observed_days, previous.missing_days) == (30, 0)
+    assert current.observed_days + current.missing_days == 30
+    assert previous.observed_days + previous.missing_days == 30
+
+    excluded = registry.invoke(
+        "query_traffic",
+        {**arguments, "include_missing": False},
+        tool_context,
+    )
+    assert [(row.period, row.product_id) for row in excluded.rows] == [
+        ("previous", "P005")
+    ]
+
+
+def test_query_traffic_counts_implicit_missing_product_day(
+    catalog_with_one_traffic_day_omitted: Catalog,
+) -> None:
+    context = ToolContext(
+        catalog=catalog_with_one_traffic_day_omitted,
+        prior_executions=(),
+        next_result_id=lambda: "result_0007",
+    )
+    arguments = {
+        "start_date": "2026-04-01",
+        "end_date": "2026-04-03",
+        "comparison_start_date": "2026-03-29",
+        "comparison_end_date": "2026-03-31",
+        "product_ids": ["P001"],
+        "include_missing": True,
+    }
+
+    included = build_default_registry().invoke(
+        "query_traffic",
+        arguments,
+        context,
+    )
+
+    current = next(row for row in included.rows if row.period == "current")
+    previous = next(row for row in included.rows if row.period == "previous")
+    assert (current.observed_days, current.missing_days) == (2, 1)
+    assert (previous.observed_days, previous.missing_days) == (3, 0)
+    assert current.observed_days + current.missing_days == 3
+    assert previous.observed_days + previous.missing_days == 3
+    assert (current.impressions, current.clicks, current.visits) == (200, 20, 24)
+
+    excluded = build_default_registry().invoke(
+        "query_traffic",
+        {**arguments, "include_missing": False},
+        context,
+    )
+    assert [(row.period, row.product_id) for row in excluded.rows] == [
+        ("previous", "P001")
+    ]
+
+
+def test_query_traffic_returns_stably_sorted_period_product_rows(
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    result = registry.invoke(
+        "query_traffic",
+        {
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-03",
+            "comparison_start_date": "2026-03-29",
+            "comparison_end_date": "2026-03-31",
+            "product_ids": ["P003", "P001", "P002"],
+            "include_missing": True,
+        },
+        tool_context,
+    )
+
+    assert result.rows == sorted(
+        result.rows,
+        key=lambda row: (row.period, row.product_id),
+    )
