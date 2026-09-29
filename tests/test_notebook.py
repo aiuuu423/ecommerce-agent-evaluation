@@ -17,7 +17,7 @@ def load_notebook() -> nbformat.NotebookNode:
 
 
 @pytest.fixture
-def isolated_notebook_project(tmp_path: Path) -> tuple[Path, Path]:
+def isolated_notebook_project(tmp_path: Path) -> Path:
     project_root = tmp_path / "project"
     project_root.mkdir()
     (project_root / "notebooks").mkdir()
@@ -27,16 +27,15 @@ def isolated_notebook_project(tmp_path: Path) -> tuple[Path, Path]:
     )
     shutil.copytree(ROOT / "app", project_root / "app")
 
-    data_root = tmp_path / "phase1-data"
     build_phase1(
         development_config=ROOT / "configs/data/synthetic_v1.yaml",
         public_validation_config=(
             ROOT / "configs/data/synthetic_public_validation_v1.yaml"
         ),
-        output_root=data_root,
+        output_root=project_root / "data",
         stage="data",
     )
-    return project_root, data_root
+    return project_root
 
 
 def test_data_exploration_notebook_has_required_sections() -> None:
@@ -84,9 +83,9 @@ def test_notebook_uses_verified_catalog_without_public_validation_query_access()
 
     assert "Path.cwd()" in code
     assert "pyproject.toml" in code
-    assert "PHASE1_DATA_ROOT" in code
-    assert '"synthetic" / "v1"' in code
-    assert '"synthetic" / "public-validation-v1"' in code
+    assert "PHASE1_DATA_ROOT" not in code
+    assert 'PROJECT_ROOT / "data/synthetic/v1"' in code
+    assert 'PROJECT_ROOT / "data/synthetic/public-validation-v1"' in code
     assert "open_dataset" in code
     assert ".fetch_df()" in code
     assert ".verified_summary" in code
@@ -133,12 +132,10 @@ def test_notebook_covers_business_metrics_without_agent_effect_numbers() -> None
 @pytest.mark.parametrize("execution_subdirectory", [Path(), Path("notebooks")])
 def test_notebook_executes_from_supported_working_directories(
     execution_subdirectory: Path,
-    isolated_notebook_project: tuple[Path, Path],
-    monkeypatch: pytest.MonkeyPatch,
+    isolated_notebook_project: Path,
 ) -> None:
-    project_root, data_root = isolated_notebook_project
+    project_root = isolated_notebook_project
     execution_cwd = project_root / execution_subdirectory
-    monkeypatch.setenv("PHASE1_DATA_ROOT", str(data_root))
     notebook = load_notebook()
     notebook.cells.append(
         nbformat.v4.new_code_cell(
