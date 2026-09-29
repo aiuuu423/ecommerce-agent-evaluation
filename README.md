@@ -1,6 +1,6 @@
 # 多版本 Agent 效果评测与错误归因分析
 
-当前阶段：`PHASE 1 — Completed / Awaiting Review`。Agent 实验结果仍为
+当前阶段：`PHASE 2 — Completed / Awaiting Review`。Real LLM 与 Agent 实验结果仍为
 `Pending / Not Run`。
 
 本项目使用明确标记的 Synthetic E-commerce Data 构建可复现的 Agent Evaluation 闭环。
@@ -42,6 +42,26 @@ python3.12 -m app.data.phase1 \
   --tool-contract configs/evaluation/tool_contract_v1.yaml \
   --output-root /tmp/phase1-clean
 ```
+
+## Phase 2
+
+Phase 2 提供五个受控工具（`query_product`、`query_sales`、`query_traffic`、
+`query_marketing`、`calculate_metrics`）、稳定的 Tool Registry、
+Deterministic/OpenAI-compatible 双 adapter、通用 Runner 与结构化 decision trace。
+当前尚未实现或运行 Baseline V1、Optimized V2、A/B Evaluation 或真实模型实验。
+
+无 API Key 离线验证：
+
+```bash
+make PYTHON=python3.12 PHASE2_SMOKE_DIR=/tmp/phase2-smoke phase2-smoke
+```
+
+offline smoke 仅验证
+`Deterministic adapter → Runner → Registry → query_sales → calculate_metrics → final answer`
+链路；它不读取 Evaluation Cases、不评分、不生成 Phase 3 run artifact，也不代表 V1/V2
+实验结果。真实模型仅在显式配置 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 后可由
+`OpenAICompatibleAdapter` 使用；该路径目前只通过 fake/mock transport 测试，未选择或调用
+真实 provider/model。offline smoke 不读取这些变量，也不访问网络。
 
 ## 数据真实性
 

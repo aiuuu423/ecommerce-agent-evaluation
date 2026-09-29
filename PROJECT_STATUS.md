@@ -2,16 +2,17 @@
 
 ## Current Phase
 
-`PHASE 1 — 模拟数据与 Evaluation Dataset`
+`PHASE 2 — Agent 基础能力`
 
-状态：`Completed / Phase 2 Plan Awaiting Approval`
+状态：`Completed / Awaiting Review`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Validation 数据快照与
 100 个冻结 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases）；三个 Makefile
 Phase 1 目标统一委托单一 CLI，并从配置的 `dataset_version` 动态推导输出目录；项目元数据
-仅公开 `build-phase1` 入口。快照身份绑定生成器源码，跨平台文件锁与只读数据探索
-Notebook 已完成真实执行验证。Phase 2 原子化实施计划已经编写并通过独立计划审查，尚未开始
-Phase 2 代码实现。
+公开 `build-phase1` 与 `phase2-smoke` 入口。快照身份绑定生成器源码，跨平台文件锁与只读
+数据探索 Notebook 已完成真实执行验证。Phase 2 已完成五个受控工具、Tool Registry、
+Deterministic/OpenAI-compatible 双 adapter、通用 Runner、结构化 decision trace 与无网络
+offline smoke；Real LLM 与 V1/V2 实验仍为 `Pending / Not Run`。
 
 ## Completed
 
@@ -51,11 +52,22 @@ Phase 2 代码实现。
   Notebook 避免暴露预设答案与异常配置，Phase 0 记录现行分阶段治理并明确取代旧决策。
 - [x] 用户确认 Phase 1 交付并要求编写 Phase 2 原子化实施计划。
 - [x] 创建并自审 Phase 2 Agent 基础能力实施计划。
+- [x] 实现 `query_product`、`query_sales`、`query_traffic`、`query_marketing` 与
+  `calculate_metrics` 五个受控工具及强类型输入/输出边界。
+- [x] 建立稳定 Tool Registry；固定五工具 Schema 导出并对 handler 输出执行二次严格验证。
+- [x] 实现 Deterministic 与 OpenAI-compatible 双 adapter；后者当前仅通过 fake/mock
+  transport 验证。
+- [x] 实现通用 Agent Runner、结构化 decision trace、错误归一化与多轮 Usage 累加。
+- [x] 建立无 API Key、无网络的 offline smoke，贯通
+  `query_sales → calculate_metrics → final answer`。
+- [x] 通过 Phase 1 冻结资产门禁，确认 16 个冻结资产、Dataset IDs、Case Set ID、
+  manifests、baseline 与工具契约未漂移。
 
 ## Pending
 
-- [ ] 用户审阅并批准 Phase 2 原子化实施计划。
-- [ ] 选择 Phase 2 的 Subagent-Driven 或 Inline Execution 执行方式。
+- [ ] 用户审阅 Phase 2 实现与验证证据。
+- [ ] 审阅通过后进入 Phase 3；在此之前不宣称已运行 V1/V2 或获得评测结果。
+- [ ] 选择真实 LLM provider/model 与预算后，另行运行真实模型验证。
 
 ## Evaluation Results
 
@@ -63,6 +75,7 @@ Phase 2 代码实现。
 |---|---|
 | Synthetic Dataset | Completed / Validated |
 | Evaluation Dataset | Completed / Validated |
+| Real LLM | Pending / Not Run |
 | Baseline Experiment | Pending / Not Run |
 | Optimized Experiment | Pending / Not Run |
 | A/B Metrics | Pending / Not Run |
@@ -78,7 +91,10 @@ Phase 2 代码实现。
 - Public Validation 是公开开发验证集，不是盲测；V2 冻结后才生成此前未见的
   最终盲测集。
 - Parquet 字节一致性要求使用锁定依赖中的相同 Pandas/PyArrow 写入器版本。
-- Real LLM provider、具体模型和预算尚未确定；不影响 Mock 路径设计。
+- OpenAI-compatible adapter 仅通过 fake/mock transport 测试，尚未选择或调用真实
+  provider/model，Real LLM 为 `Pending / Not Run`。
+- 尚未实现或运行 Baseline V1、Optimized V2、A/B Evaluation；offline smoke 不读取
+  Evaluation Cases、不评分、不生成 Phase 3 run artifact。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
 - Phase 7 实施前仍须冻结簇级二元汇总或适合聚类数据的配对方法、Cluster Bootstrap
   细节、有效样本量口径与退化情形处理；不得在 100 个 Case 对上直接运行假设相互独立的
@@ -116,14 +132,27 @@ Phase 2 代码实现。
   `9/12/9`。
 - Gold 独立性与端到端复现定向测试：`2 passed`。
 - Console script 唯一性与 Makefile 统一 CLI 委托定向测试：`5 passed`。
-- 全量测试：`357 passed`。
+- Phase 1 验收时全量测试：`357 passed`。
 - Notebook 结构与真实执行测试：`6 passed`（项目根目录与 `notebooks/` 两种工作目录）。
 - `python -m ruff check app tests notebooks`：`All checks passed!`。
 - 旧术语搜索：仅 Phase 0 的“Public Validation 不是最终盲测集”和历史决策说明命中。
 - 变更 Markdown 检查：`markdownlint-cli2`（忽略既有代码块制表符、行长与列表空行规则）
   `0 error(s)`。
 - `git diff --check`：PASS。
+- Phase 1 冻结资产门禁：`3 passed in 5.57s`。
+- Phase 2 定向测试：`152 passed in 13.35s`。
+- 全量测试：`512 passed, 2 warnings in 153.23s`；两条 warning 均为只读用户目录触发的
+  IPython 临时目录提示。
+- Ruff：`All checks passed!`。
+- Registry：恰好 `5` 个工具，顺序为 `calculate_metrics`、`query_marketing`、
+  `query_product`、`query_sales`、`query_traffic`；canonical JSON Schema SHA-256 为
+  `9a501e7839e32df5bfbf965d3bfa3921ce6212456e56170bf09750e8ff368343`。
+- offline smoke：`status=completed`、`adapter=deterministic`、
+  `dataset_id=e1e81533c25e03e5`、工具链为
+  `query_sales → calculate_metrics`、`trace_event_count=11`、
+  `gmv_change_rate=-0.022536435249076572`；环境中未提供 LLM 配置且未访问网络。
+- Phase 2 文档更新前 `git diff --check`：PASS，工作树无未提交变更。
 
 ## Next Step
 
-等待用户审阅 Phase 2 原子化实施计划；计划获批前不实现 Phase 2 工具、Adapter 或 Runner。
+等待用户审阅 Phase 2 实现与验证证据；审阅通过后进入 Phase 3。
