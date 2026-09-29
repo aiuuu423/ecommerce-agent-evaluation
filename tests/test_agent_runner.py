@@ -63,6 +63,10 @@ def valid_sales_arguments() -> dict[str, Any]:
     }
 
 
+def normalized_sales_arguments() -> dict[str, Any]:
+    return {**valid_sales_arguments(), "product_ids": ()}
+
+
 def sample_product_result(result_id: str) -> QueryProductResult:
     return QueryProductResult(
         result_id=result_id,
@@ -300,6 +304,11 @@ def test_runner_executes_tools_and_records_public_trace(catalog: Catalog) -> Non
         "row_count",
         "warnings",
     }
+    assert result.decision_trace[2].payload == {
+        "call_id": "call_0001",
+        "tool_name": "query_product",
+        "arguments": {"product_ids": ("P001",)},
+    }
     serialized = result.model_dump_json()
     for forbidden in ("thought", "sql", "/tmp/", "api_key", "gold"):
         assert forbidden not in serialized.lower()
@@ -350,10 +359,45 @@ def test_unvalidated_tool_data_and_sensitive_errors_do_not_enter_trace(
     )
 
     assert result.status == "failed"
+    assert [event.event_type for event in result.decision_trace[-2:]] == [
+        "tool_call",
+        "error",
+    ]
+    assert result.decision_trace[-2].payload == {
+        "call_id": "call_0001",
+        "tool_name": "query_product",
+    }
     assert result.decision_trace[-1].payload == {
         "code": "invalid_arguments",
         "summary": "Tool arguments failed validation.",
     }
+    serialized = result.model_dump_json().lower()
+    for forbidden in ("api_key", "sk-secret", "/tmp/private/key", "drop table"):
+        assert forbidden not in serialized
+
+
+def test_unknown_tool_trace_replaces_untrusted_name_and_arguments(
+    catalog: Catalog,
+) -> None:
+    malicious_name = "unknown api_key=sk-secret /tmp/private/key DROP TABLE sales"
+    malicious_arguments = {
+        "api_key": "sk-secret",
+        "path": "/tmp/private/key",
+        "sql": "DROP TABLE sales",
+    }
+    result = runner(
+        lambda _: call("call_unknown", malicious_name, malicious_arguments)
+    ).run(RunRequest(user_input="x"), catalog)
+
+    assert [event.event_type for event in result.decision_trace[-2:]] == [
+        "tool_call",
+        "error",
+    ]
+    assert result.decision_trace[-2].payload == {
+        "call_id": "call_unknown",
+        "tool_name": "unknown",
+    }
+    assert result.decision_trace[-1].payload["code"] == "unknown_tool"
     serialized = result.model_dump_json().lower()
     for forbidden in ("api_key", "sk-secret", "/tmp/private/key", "drop table"):
         assert forbidden not in serialized
@@ -370,6 +414,15 @@ def test_tool_exception_trace_contains_only_safe_code_and_summary(catalog: Catal
         ),
     ).run(RunRequest(user_input="x"), catalog)
 
+    assert [event.event_type for event in result.decision_trace[-2:]] == [
+        "tool_call",
+        "error",
+    ]
+    assert result.decision_trace[-2].payload == {
+        "call_id": "call_0001",
+        "tool_name": "query_sales",
+        "arguments": normalized_sales_arguments(),
+    }
     assert result.decision_trace[-1].payload == {
         "code": "tool_execution_error",
         "summary": "Tool execution failed.",
@@ -477,6 +530,12 @@ def test_runner_normalizes_tool_failures(
     result = runner(policy).run(RunRequest(user_input="x"), catalog)
     assert result.status == "failed"
     assert result.final_answer is None
+    assert [event.event_type for event in result.decision_trace] == [
+        "adapter_request",
+        "adapter_response",
+        "tool_call",
+        "error",
+    ]
     assert result.decision_trace[-1].event_type == "error"
     assert result.decision_trace[-1].payload["code"] == error_code
 
@@ -501,6 +560,17 @@ def test_runner_distinguishes_invalid_result_from_execution_error(
         adapter=DeterministicAdapter(lambda _: call("c1", "query_sales", valid_sales_arguments())),
     ).run(RunRequest(user_input="x"), catalog)
     assert result.status == "failed"
+    assert [event.event_type for event in result.decision_trace] == [
+        "adapter_request",
+        "adapter_response",
+        "tool_call",
+        "error",
+    ]
+    assert result.decision_trace[-2].payload == {
+        "call_id": "c1",
+        "tool_name": "query_sales",
+        "arguments": normalized_sales_arguments(),
+    }
     assert result.decision_trace[-1].payload["code"] == error_code
 
 
@@ -525,6 +595,21 @@ def test_runner_rejects_duplicate_result_id_without_overwriting_execution(
     ).run(RunRequest(user_input="x"), catalog)
     assert result.status == "failed"
     assert result.decision_trace[-1].payload["code"] == "duplicate_result_id"
+    assert [event.event_type for event in result.decision_trace] == [
+        "adapter_request",
+        "adapter_response",
+        "tool_call",
+        "tool_result",
+        "adapter_request",
+        "adapter_response",
+        "tool_call",
+        "error",
+    ]
+    assert result.decision_trace[-2].payload == {
+        "call_id": "c2",
+        "tool_name": "query_product",
+        "arguments": {"product_ids": ("P001",)},
+    }
     assert invocation_count() == 2
     assert [item.result.result_id for item in result.prior_tool_executions] == ["result_0001"]
 

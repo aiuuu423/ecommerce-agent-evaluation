@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
@@ -453,14 +454,31 @@ def test_registry_rejects_unknown_tools_and_invalid_input() -> None:
     with pytest.raises(UnknownToolError, match="unknown tool"):
         registry.get("unknown")
     with pytest.raises(UnknownToolError, match="unknown tool"):
-        registry.invoke("unknown", {}, context=_valid_context())
+        registry.validate_input("unknown", {})
     with pytest.raises(ToolInputValidationError) as exc_info:
-        registry.invoke(
+        registry.validate_input(
             "query_sales",
             {"start_date": "not-a-date"},
-            context=_valid_context(),
         )
     assert isinstance(exc_info.value.__cause__, ValidationError)
+
+
+def test_registry_public_validation_returns_bound_input_model() -> None:
+    registry = ToolRegistry()
+    registry.register(_malformed_query_sales_definition())
+
+    with mock.patch.object(
+        QuerySalesInput,
+        "model_validate",
+        wraps=QuerySalesInput.model_validate,
+    ) as model_validate:
+        parsed = registry.validate_input("query_sales", _valid_sales_arguments())
+        with pytest.raises(ToolOutputValidationError):
+            registry.invoke("query_sales", parsed, _valid_context())
+
+    assert isinstance(parsed, QuerySalesInput)
+    assert parsed.model_dump(mode="json") == _valid_sales_arguments()
+    model_validate.assert_called_once_with(_valid_sales_arguments())
 
 
 def test_registry_does_not_reclassify_handler_key_error() -> None:

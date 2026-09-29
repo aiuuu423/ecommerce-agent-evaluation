@@ -79,17 +79,29 @@ class ToolRegistry:
             for definition in (self._definitions[name] for name in self.names())
         ]
 
-    def invoke(
+    def validate_input(
         self,
         name: str,
         arguments: dict[str, Any],
+    ) -> BaseModel:
+        definition = self.get(name)
+        try:
+            return definition.input_model.model_validate(arguments)
+        except ValidationError as exc:
+            raise ToolInputValidationError(f"invalid arguments for {name}") from exc
+
+    def invoke(
+        self,
+        name: str,
+        arguments: dict[str, Any] | BaseModel,
         context: ToolContext,
     ) -> AnyToolResult:
         definition = self.get(name)
-        try:
-            parsed = definition.input_model.model_validate(arguments)
-        except ValidationError as exc:
-            raise ToolInputValidationError(f"invalid arguments for {name}") from exc
+        parsed = (
+            arguments
+            if isinstance(arguments, definition.input_model)
+            else self.validate_input(name, arguments)
+        )
 
         result = definition.handler(parsed, context)
         try:

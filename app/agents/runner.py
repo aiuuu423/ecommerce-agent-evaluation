@@ -5,7 +5,6 @@ from app.llm import (
     AdapterResponse,
     AssistantAction,
     LLMAdapter,
-    ToolCall,
     Usage,
 )
 from app.tools import (
@@ -81,13 +80,21 @@ class TraceBuilder:
             }
         self._append(TraceEventType.ADAPTER_RESPONSE, payload)
 
-    def tool_call(self, call: ToolCall) -> None:
+    def tool_call(
+        self,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, JsonValue] | None = None,
+    ) -> None:
+        payload: dict[str, JsonValue] = {
+            "call_id": call_id,
+            "tool_name": tool_name,
+        }
+        if arguments is not None:
+            payload["arguments"] = arguments
         self._append(
             TraceEventType.TOOL_CALL,
-            {
-                "call_id": call.call_id,
-                "tool_name": call.name,
-            },
+            payload,
         )
 
     def tool_result(self, result: AnyToolResult) -> None:
@@ -249,6 +256,33 @@ class AgentRunner:
                     "duplicate_call_id",
                 )
             seen_call_ids.add(tool_call.call_id)
+            try:
+                parsed_arguments = self._registry.validate_input(
+                    tool_call.name,
+                    tool_call.arguments,
+                )
+            except UnknownToolError:
+                trace.tool_call(tool_call.call_id, "unknown")
+                return _failed(
+                    trace,
+                    executions,
+                    usage,
+                    "unknown_tool",
+                )
+            except ToolInputValidationError:
+                trace.tool_call(tool_call.call_id, tool_call.name)
+                return _failed(
+                    trace,
+                    executions,
+                    usage,
+                    "invalid_arguments",
+                )
+            normalized_arguments = parsed_arguments.model_dump(mode="json")
+            trace.tool_call(
+                tool_call.call_id,
+                tool_call.name,
+                normalized_arguments,
+            )
             context = ToolContext(
                 catalog=catalog,
                 prior_executions=tuple(executions),
@@ -257,22 +291,8 @@ class AgentRunner:
             try:
                 tool_result = self._registry.invoke(
                     tool_call.name,
-                    tool_call.arguments,
+                    parsed_arguments,
                     context,
-                )
-            except UnknownToolError:
-                return _failed(
-                    trace,
-                    executions,
-                    usage,
-                    "unknown_tool",
-                )
-            except ToolInputValidationError:
-                return _failed(
-                    trace,
-                    executions,
-                    usage,
-                    "invalid_arguments",
                 )
             except ToolOutputValidationError:
                 return _failed(
@@ -297,11 +317,10 @@ class AgentRunner:
                     "duplicate_result_id",
                 )
             seen_result_ids.add(tool_result.result_id)
-            trace.tool_call(tool_call)
             executions.append(
                 PriorToolExecution(
                     call_id=tool_call.call_id,
-                    arguments=tool_call.arguments,
+                    arguments=normalized_arguments,
                     result=tool_result,
                 )
             )
