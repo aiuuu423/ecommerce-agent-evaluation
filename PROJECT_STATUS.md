@@ -4,13 +4,14 @@
 
 `PHASE 1 — 模拟数据与 Evaluation Dataset`
 
-状态：`Completed / Awaiting Review`
+状态：`Completed / Phase 2 Plan Awaiting Approval`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Validation 数据快照与
 100 个冻结 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases）；三个 Makefile
 Phase 1 目标统一委托单一 CLI，并从配置的 `dataset_version` 动态推导输出目录；项目元数据
 仅公开 `build-phase1` 入口。快照身份绑定生成器源码，跨平台文件锁与只读数据探索
-Notebook 已完成真实执行验证。
+Notebook 已完成真实执行验证。Phase 2 原子化实施计划已经编写并通过独立计划审查，尚未开始
+Phase 2 代码实现。
 
 ## Completed
 
@@ -48,10 +49,13 @@ Notebook 已完成真实执行验证。
 - [x] 完成 Phase 1 全量测试、静态检查与 Notebook 真实执行。
 - [x] 清理旧数据分区语义；Phase 1 统一使用 Development/Public Validation，
   Notebook 避免暴露预设答案与异常配置，Phase 0 记录现行分阶段治理并明确取代旧决策。
+- [x] 用户确认 Phase 1 交付并要求编写 Phase 2 原子化实施计划。
+- [x] 创建并自审 Phase 2 Agent 基础能力实施计划。
 
 ## Pending
 
-- [ ] 用户审阅 Phase 1 实际交付后进入 Phase 2。
+- [ ] 用户审阅并批准 Phase 2 原子化实施计划。
+- [ ] 选择 Phase 2 的 Subagent-Driven 或 Inline Execution 执行方式。
 
 ## Evaluation Results
 
@@ -122,4 +126,4 @@ Notebook 已完成真实执行验证。
 
 ## Next Step
 
-等待用户审阅 Phase 1 实际交付；不提前实现 Phase 2 工具。
+等待用户审阅 Phase 2 原子化实施计划；计划获批前不实现 Phase 2 工具、Adapter 或 Runner。
