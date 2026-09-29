@@ -1,9 +1,20 @@
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
+from app.tools import (
+    ToolContext,
+    ToolDefinition,
+    ToolInputValidationError,
+    ToolOutputValidationError,
+    ToolRegistry,
+    UnknownToolError,
+    build_default_registry,
+)
 from app.tools.schemas import (
     CalculateMetricsInput,
     CalculateMetricsResult,
@@ -21,6 +32,10 @@ from app.tools.schemas import (
 
 ROOT = Path(__file__).parents[1]
 CASES = ROOT / "data/evaluation_cases/v1/cases.jsonl"
+CONTRACT = ROOT / "configs/evaluation/tool_contract_v1.yaml"
+EXPECTED_TOOL_SCHEMA_SHA256 = (
+    "9a501e7839e32df5bfbf965d3bfa3921ce6212456e56170bf09750e8ff368343"
+)
 FROZEN_CASE_METRICS = {
     "aov_change_rate",
     "current_aov",
@@ -301,3 +316,154 @@ def test_calculate_metrics_columns_define_validation_and_json_order() -> None:
     ]
     assert set(payload["rows"][0]) == set(result.columns)
     assert list(payload["rows"][0]) == result.columns
+
+
+def _valid_sales_arguments() -> dict[str, object]:
+    return {**_window_arguments(), "include_refunds": True}
+
+
+def _valid_context() -> ToolContext:
+    return ToolContext(
+        catalog=object(),
+        prior_executions=(),
+        next_result_id=lambda: "result_0001",
+    )
+
+
+def _malformed_query_sales_definition() -> ToolDefinition:
+    def malformed_handler(_arguments, _context):
+        return QuerySalesResult.model_construct(
+            **_result_envelope("query_sales", [], [])
+        )
+
+    return ToolDefinition(
+        name="query_sales",
+        description="Malformed sales tool for boundary testing.",
+        input_model=QuerySalesInput,
+        output_model=QuerySalesResult,
+        handler=malformed_handler,
+    )
+
+
+def test_registry_rejects_duplicates_and_exports_stable_schema() -> None:
+    registry = build_default_registry()
+    assert registry.names() == (
+        "calculate_metrics",
+        "query_marketing",
+        "query_product",
+        "query_sales",
+        "query_traffic",
+    )
+    exported = registry.openai_tools()
+    assert [item["function"]["name"] for item in exported] == list(registry.names())
+    assert all(
+        item["function"]["parameters"]["additionalProperties"] is False
+        for item in exported
+    )
+    assert {
+        name: registry.get(name).output_model
+        for name in registry.names()
+    } == {
+        "calculate_metrics": CalculateMetricsResult,
+        "query_marketing": QueryMarketingResult,
+        "query_product": QueryProductResult,
+        "query_sales": QuerySalesResult,
+        "query_traffic": QueryTrafficResult,
+    }
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register(registry.get("query_sales"))
+
+
+def test_registry_schema_required_exactly_matches_frozen_contract() -> None:
+    contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+    exported = {
+        item["function"]["name"]: item["function"]["parameters"]
+        for item in build_default_registry().openai_tools()
+    }
+    assert set(contract["tools"]) <= set(exported)
+    for name, frozen in contract["tools"].items():
+        assert exported[name]["required"] == frozen["required_parameters"]
+
+
+def test_registry_rejects_unknown_tools_and_invalid_input() -> None:
+    registry = build_default_registry()
+    with pytest.raises(UnknownToolError, match="unknown tool"):
+        registry.get("unknown")
+    with pytest.raises(UnknownToolError, match="unknown tool"):
+        registry.invoke("unknown", {}, context=_valid_context())
+    with pytest.raises(ToolInputValidationError) as exc_info:
+        registry.invoke(
+            "query_sales",
+            {"start_date": "not-a-date"},
+            context=_valid_context(),
+        )
+    assert isinstance(exc_info.value.__cause__, ValidationError)
+
+
+def test_registry_does_not_reclassify_handler_key_error() -> None:
+    def failing_handler(_arguments, _context):
+        raise KeyError("handler-miss")
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="query_sales",
+            description="Failing sales handler for exception testing.",
+            input_model=QuerySalesInput,
+            output_model=QuerySalesResult,
+            handler=failing_handler,
+        )
+    )
+    with pytest.raises(KeyError, match="handler-miss"):
+        registry.invoke("query_sales", _valid_sales_arguments(), _valid_context())
+
+
+def test_registry_revalidates_handler_output_with_bound_model() -> None:
+    registry = ToolRegistry()
+    registry.register(_malformed_query_sales_definition())
+    with pytest.raises(ToolOutputValidationError) as exc_info:
+        registry.invoke("query_sales", _valid_sales_arguments(), _valid_context())
+    assert isinstance(exc_info.value.__cause__, ValidationError)
+
+
+def test_calculate_metrics_uses_request_dependent_output_validator() -> None:
+    default_definition = build_default_registry().get("calculate_metrics")
+
+    def wrong_column_order_handler(_arguments, _context):
+        return CalculateMetricsResult.model_validate(
+            _result_envelope(
+                "calculate_metrics",
+                ["current_gmv", "product_id"],
+                [{"current_gmv": 10.0, "product_id": "P001"}],
+            )
+        )
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=default_definition.name,
+            description=default_definition.description,
+            input_model=default_definition.input_model,
+            output_model=default_definition.output_model,
+            handler=wrong_column_order_handler,
+            output_validator=default_definition.output_validator,
+        )
+    )
+    with pytest.raises(ToolOutputValidationError, match="invalid result") as exc_info:
+        registry.invoke(
+            "calculate_metrics",
+            {"metrics": ["current_gmv"], "group_by": ["product_id"]},
+            _valid_context(),
+        )
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_openai_tool_schema_digest_is_frozen_and_json_serializable() -> None:
+    exported = build_default_registry().openai_tools()
+    canonical = json.dumps(
+        exported,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    assert json.loads(canonical) == exported
+    assert hashlib.sha256(canonical).hexdigest() == EXPECTED_TOOL_SCHEMA_SHA256
