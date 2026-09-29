@@ -10,6 +10,7 @@ from app.tools.base import (
     ToolOutputValidationError,
     UnknownToolError,
 )
+from app.tools.metrics import calculate_metrics
 from app.tools.queries import (
     query_marketing,
     query_product,
@@ -160,6 +161,7 @@ def build_default_registry() -> ToolRegistry:
             description="Calculate requested metrics from prior tool results in this run.",
             input_model=CalculateMetricsInput,
             output_model=CalculateMetricsResult,
+            handler=calculate_metrics,
             output_validator=_validate_metrics_columns,
         ),
     )
