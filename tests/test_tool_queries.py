@@ -99,3 +99,103 @@ def test_query_product_empty_match_is_not_an_error(
     assert result.rows == []
     assert result.row_count == 0
     assert result.warnings == ["no rows matched the request"]
+
+
+def test_query_sales_matches_independent_catalog_aggregates(
+    catalog: Catalog,
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    arguments = {
+        "start_date": "2026-04-01",
+        "end_date": "2026-04-30",
+        "comparison_start_date": "2026-03-02",
+        "comparison_end_date": "2026-03-31",
+        "product_ids": [],
+        "include_refunds": True,
+    }
+
+    result = registry.invoke("query_sales", arguments, tool_context)
+
+    assert result.columns == [
+        "period",
+        "product_id",
+        "category",
+        "region",
+        "channel",
+        "gmv",
+        "orders",
+        "units",
+        "refund_orders",
+    ]
+    assert result.rows == sorted(
+        result.rows,
+        key=lambda row: (row.period, row.product_id, row.region, row.channel),
+    )
+    for period, start_date, end_date in (
+        ("current", "2026-04-01", "2026-04-30"),
+        ("previous", "2026-03-02", "2026-03-31"),
+    ):
+        expected = catalog.execute(
+            """
+            select
+                sum(revenue),
+                count(distinct order_id),
+                sum(quantity),
+                count(distinct order_id) filter (where is_refund)
+            from orders
+            where order_date between ? and ?
+            """,
+            [start_date, end_date],
+        ).fetchone()
+        assert expected is not None
+        rows = [row for row in result.rows if row.period == period]
+        assert sum(row.gmv for row in rows) == pytest.approx(float(expected[0]))
+        assert sum(row.orders for row in rows) == expected[1]
+        assert sum(row.units for row in rows) == expected[2]
+        assert sum(row.refund_orders for row in rows) == expected[3]
+
+
+def test_query_sales_product_filter_and_refund_switch(
+    catalog: Catalog,
+    registry: ToolRegistry,
+    tool_context: ToolContext,
+) -> None:
+    base = {
+        "start_date": "2026-04-01",
+        "end_date": "2026-04-30",
+        "comparison_start_date": "2026-03-02",
+        "comparison_end_date": "2026-03-31",
+        "product_ids": ["P004"],
+    }
+
+    included = registry.invoke(
+        "query_sales", {**base, "include_refunds": True}, tool_context
+    )
+    excluded = registry.invoke(
+        "query_sales", {**base, "include_refunds": False}, tool_context
+    )
+
+    assert {row.product_id for row in included.rows} == {"P004"}
+    assert {row.product_id for row in excluded.rows} == {"P004"}
+    assert sum(row.refund_orders for row in included.rows) > 0
+    assert sum(row.refund_orders for row in excluded.rows) == 0
+    for period, start_date, end_date in (
+        ("current", "2026-04-01", "2026-04-30"),
+        ("previous", "2026-03-02", "2026-03-31"),
+    ):
+        expected = catalog.execute(
+            """
+            select sum(revenue), count(distinct order_id), sum(quantity)
+            from orders
+            where order_date between ? and ?
+              and product_id = ?
+              and not is_refund
+            """,
+            [start_date, end_date, "P004"],
+        ).fetchone()
+        assert expected is not None
+        rows = [row for row in excluded.rows if row.period == period]
+        assert sum(row.gmv for row in rows) == pytest.approx(float(expected[0]))
+        assert sum(row.orders for row in rows) == expected[1]
+        assert sum(row.units for row in rows) == expected[2]
