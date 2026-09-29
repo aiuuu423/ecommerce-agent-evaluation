@@ -7,9 +7,10 @@
 状态：`Completed / Awaiting Review`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Validation 数据快照与
-100 个冻结 Evaluation Cases；三个 Makefile Phase 1 目标统一委托单一 CLI，并从配置的
-`dataset_version` 动态推导输出目录；项目元数据仅公开 `build-phase1` 入口。快照身份绑定
-生成器源码，跨平台文件锁与只读数据探索 Notebook 已完成真实执行验证。
+100 个冻结 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases）；三个 Makefile
+Phase 1 目标统一委托单一 CLI，并从配置的 `dataset_version` 动态推导输出目录；项目元数据
+仅公开 `build-phase1` 入口。快照身份绑定生成器源码，跨平台文件锁与只读数据探索
+Notebook 已完成真实执行验证。
 
 ## Completed
 
@@ -22,16 +23,18 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Va
 - [x] 确认采用业务任务与评测能力双维度 Task Taxonomy。
 - [x] 确认采用规则优先的混合评分。
 - [x] 确认使用 E1–E10 Error Taxonomy 和因果式 RCA。
-- [x] 确认使用配对比较、Exact McNemar Test 与 Paired Bootstrap。
+- [x] 确认 V1/V2 结果按 `case_id` 配对，统计推断、Cluster Bootstrap 与有效样本量按
+  `statistical_cluster_id` 处理；二元配对的簇级汇总或聚类方法在 Phase 7 实施前冻结。
 - [x] 确认 Dashboard 只读取冻结实验结果。
 - [x] 创建 `PROJECT_PLAN.md`。
 - [x] 创建 Phase 0 设计文档。
 - [x] 用户批准 Phase 0 书面设计。
 - [x] 创建 Phase 1 原子化实施计划。
 - [x] 生成并验证 Development 与 Public Validation 两套独立 Synthetic Data 快照。
-- [x] 冻结 100 个 Evaluation Cases（每任务 14/6 Split；Public Validation 十类能力各
-  3，难度 9/12/9）。
-- [x] 增加 `statistical_cluster_id`；统计推断按 cluster 计算。
+- [x] 冻结 100 个 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases；每任务
+  14/6 Split；Public Validation 十类能力各 3，难度 9/12/9）。
+- [x] 增加 `statistical_cluster_id`；统计推断、Cluster Bootstrap 与有效样本量按
+  cluster 计算。
 - [x] 版本化评测工具契约并修正 GMV、Next-week 与 Adversarial 工具路径。
 - [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
 - [x] 建立只读数据探索 Notebook，并隔离 Public Validation 查询句柄。
@@ -73,13 +76,17 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Va
 - Parquet 字节一致性要求使用锁定依赖中的相同 Pandas/PyArrow 写入器版本。
 - Real LLM provider、具体模型和预算尚未确定；不影响 Mock 路径设计。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
+- Phase 7 实施前仍须冻结簇级二元汇总或适合聚类数据的配对方法、Cluster Bootstrap
+  细节、有效样本量口径与退化情形处理；不得在 100 个 Case 对上直接运行假设相互独立的
+  Exact McNemar Test。
 
 ## Decisions
 
 - 数据引擎：`DuckDB + Parquet`。
 - 主评分路线：规则优先的混合评分。
 - 首版业务任务范围：固定五类。
-- Evaluation Cases：首批 100，质量验证后目标扩展到 200。
+- Evaluation Cases：首批 100 Cases / 50 statistical clusters（每簇 2 Cases），质量
+  验证后目标扩展到 200 Cases。
 - Phase 状态机：只使用 `PHASE 0–11`。
 - `PHASE 1.5` 作为 Phase 1 内部里程碑。
 - `PHASE 6.5` 作为 Phase 6 内部里程碑。
@@ -100,8 +107,9 @@ Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Va
   `bb07f7c17d8b339cbd4eb5b393e5eb73e49dfa6d781ba27b957374af33af2262`。
 - Case Set ID：`ecebfe8b691271fd`；JSONL SHA-256：
   `f32e7822ca9fa7b30fee1ff2017cb4d87d7503a4c49187dfa7c475ca282cfa03`。
-- Cases：`100`，Development/Public Validation Split 为 `70/30`；每任务 `14/6`，
-  Public Validation 十类能力各 `3`、难度 `9/12/9`。
+- Cases：`100`；statistical clusters：`50`（每簇 `2` Cases）；Development/Public
+  Validation Split 为 `70/30`；每任务 `14/6`，Public Validation 十类能力各 `3`、难度
+  `9/12/9`。
 - Gold 独立性与端到端复现定向测试：`2 passed`。
 - Console script 唯一性与 Makefile 统一 CLI 委托定向测试：`5 passed`。
 - 全量测试：`357 passed`。

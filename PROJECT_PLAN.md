@@ -271,7 +271,8 @@ generator_config + seed
 - `dataset_version`
 - `metadata`
 
-首批目标为 100 Cases；完成质量检查和覆盖分析后扩充到 200 Cases。
+首批目标为 100 Cases / 50 statistical clusters（每簇 2 Cases）；完成质量检查和覆盖
+分析后扩充到 200 Cases。
 
 Ground Truth 优先由 SQL 和指标函数生成。自然语言参考答案不能作为唯一评分依据。
 
@@ -412,14 +413,24 @@ Error Shift 分析同时回答：
 
 ## 11. 统计验证
 
-因为 V1/V2 使用相同 Cases，优先使用配对方法，并以 `statistical_cluster_id`
-作为统计抽样、Bootstrap 和有效样本量计算的基本单位：
+因为 V1/V2 使用相同 Cases，结果先按 `case_id` 对齐和配对；`case_id` 不是独立统计
+抽样单位。统计推断、Cluster Bootstrap 和有效样本量计算均以
+`statistical_cluster_id` 为基本单位。当前冻结集包含 100 Cases / 50 statistical
+clusters（每簇 2 Cases），分层或子集分析必须报告该分析实际包含的唯一 cluster 数量：
 
-- 二元结果：Exact McNemar Test。
-- 成功率或比例差：Paired Bootstrap Confidence Interval。
-- 连续分数：Paired Bootstrap；必要时使用 Wilcoxon Signed-Rank Test。
-- Latency：P50、P95、样本量与配对分布比较。
-- Error Shift：配对错误转移矩阵。
+- 二元结果：不得直接把 Case 对视为相互独立后运行 Exact McNemar Test。应先冻结簇级
+  二元汇总规则并形成每簇一个 V1/V2 配对结果，再使用 McNemar；或使用明确处理簇内
+  相关性的配对二元方法。
+- 成功率、比例差和连续分数：按 `statistical_cluster_id` 有放回抽取完整簇的 Cluster
+  Bootstrap Confidence Interval，并保留簇内全部 `case_id` 配对结果。
+- Wilcoxon Signed-Rank Test 等补充检验：使用预先定义的簇级汇总，或改用适合聚类数据的
+  方法。
+- Latency：报告 P50、P95、Cases 数量、statistical clusters 数量与按 cluster 处理的
+  配对分布比较。
+- Error Shift：按 `case_id` 形成配对错误转移矩阵；区间或显著性推断按 cluster 处理。
+
+簇级汇总规则、聚类推断方法、Bootstrap 实现、有效样本量口径和退化情形处理必须在
+Phase 7 实施前冻结，不得根据实验结果选择。
 
 报告至少包含：
 
@@ -482,7 +493,8 @@ Streamlit Dashboard 使用 SQL 查询冻结结果：
 2. A/B Comparison：V1/V2 指标与分层差异。
 3. Error Analysis：错误分布、Pareto、任务和难度切片、Error Shift。
 4. Case Explorer：输入、预期、两版本回答、证据、评分、错误和 RCA。
-5. Statistical Validation：效应量、区间、McNemar 与 Bootstrap。
+5. Statistical Validation：效应量、区间、簇级或聚类二元配对方法与 Cluster
+   Bootstrap。
 6. Methodology：数据来源、指标定义、运行配置和限制。
 
 未运行时显示 `Pending / Not Run`；不可获得的 Token 或 Cost 显示 `Unavailable`。所有图表附带样本量、数据版本和 Run ID。
@@ -578,7 +590,8 @@ Streamlit Dashboard 使用 SQL 查询冻结结果：
 
 里程碑 A：Synthetic Data。
 
-里程碑 B：首批 100 Cases；目标扩展到 200 Cases。
+里程碑 B：首批 100 Cases / 50 statistical clusters（每簇 2 Cases）；目标扩展到
+200 Cases。
 
 验收：
 
@@ -645,8 +658,13 @@ Streamlit Dashboard 使用 SQL 查询冻结结果：
 验收：
 
 - 配对样本对齐检查通过。
-- McNemar、Bootstrap 和效应量使用实际结果。
-- 输出包含样本量、区间和限制。
+- 在实现统计检验前冻结簇级汇总规则、聚类推断方法、Cluster Bootstrap、有效样本量和
+  退化情形处理口径。
+- 二元配对不把 Case 对当作独立样本；McNemar 仅用于预先定义的簇级二元配对结果，
+  否则使用适合聚类数据的方法。
+- Cluster Bootstrap 和效应量使用实际结果，并以 `statistical_cluster_id` 为重采样
+  单位。
+- 输出包含 Cases 数量、statistical clusters 数量、区间和限制。
 - 不显著结果被如实保留。
 
 ### PHASE 8：Dashboard

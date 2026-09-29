@@ -300,14 +300,25 @@ Symptom
 
 ## 10. 统计设计
 
-主要统计单位为 Case。V1/V2 结果按 `case_id` 配对。
+V1/V2 的同一 Case 结果按 `case_id` 配对；`case_id` 是结果对齐键，不是独立统计
+抽样单位。同一业务任务与主要能力下的复述变体共享 `statistical_cluster_id`，因此统计
+推断、Cluster Bootstrap 和有效样本量均以 `statistical_cluster_id` 为单位。当前冻结集为
+100 Cases / 50 statistical clusters（每簇 2 Cases）；任何分层或子集分析都必须重新报告
+该子集的唯一 cluster 数量。
 
-- 二元指标使用 Exact McNemar Test。
-- 配对比例差使用 Bootstrap Confidence Interval。
-- 连续指标使用 Paired Bootstrap，必要时补充 Wilcoxon。
-- Error Shift 使用配对转移矩阵。
+- 成功率、比例差和连续指标使用 Cluster Bootstrap：按 `statistical_cluster_id` 有放回
+  抽取完整簇，保留簇内全部 `case_id` 配对结果。
+- 二元配对指标不能直接把 100 个 Case 对作为相互独立样本运行 Exact McNemar Test。
+  必须先预先定义簇级二元汇总，形成每簇一个 V1/V2 配对结果后再使用 McNemar；或者采用
+  明确处理簇内相关性的配对二元方法。
+- 若补充 Wilcoxon 等检验，同样必须先形成预先定义的簇级汇总，或采用适合聚类数据的
+  方法。
+- Error Shift 可按 `case_id` 形成配对转移矩阵；涉及区间或显著性时按 cluster 重采样或
+  使用适合聚类数据的方法。
 
-结果必须报告效应量、95% CI、p 值、样本量与限制。统计不显著时如实展示。
+簇级汇总规则、聚类推断方法、Bootstrap 实现、有效样本量口径和退化情形处理必须在
+Phase 7 实施前冻结，不得根据实验结果选择。结果必须报告效应量、95% CI、p 值、Cases
+数量、statistical clusters 数量与限制；统计不显著时如实展示。
 
 Real LLM 模式允许配置 `n_repeats`。若只有单次运行，报告必须说明模型内在方差未被充分测量。
 

@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 构建可复现、明确标记为 Synthetic 的五表电商数据快照，并从冻结数据与独立 Gold 查询程序化生成首批 100 个 Evaluation Cases。
+**Goal:** 构建可复现、明确标记为 Synthetic 的五表电商数据快照，并从冻结数据与独立 Gold
+查询程序化生成首批 100 个 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases）。
 
 **Architecture:** Phase 1 分为两个顺序里程碑。里程碑 A 使用独立的 Development/Public Validation
 版本化 YAML 配置和固定 Seed 生成 Pandas DataFrame，经过 Pydantic Schema、业务不变量与
@@ -30,7 +31,7 @@ FileLock、Pytest、Ruff、Jupyter/nbformat
 - DuckDB 只读 Catalog。
 - 独立 SQL Gold 查询。
 - Evaluation Case Schema。
-- 100 个可复现 Cases。
+- 100 个可复现 Cases / 50 个 statistical clusters。
 - Development 与 Public Validation 划分。
 - 数据质量报告与探索 Notebook。
 - Phase 1 文档和状态更新。
@@ -137,7 +138,8 @@ data/synthetic/{public_validation_dataset_version}/data_quality_report.json
 - **动态版本目录：** 统一 CLI 从 Development 与 Public Validation 配置各自的
   `dataset_version` 推导 `data/synthetic/{version}/`，并从 Development 版本推导
   `data/evaluation_cases/{development-version}/`。非 `v1` 配置已有端到端测试覆盖。
-- **冻结 Cases：** 默认配置对应的 100 个 Cases 固定提交在
+- **冻结 Cases：** 默认配置对应的 100 个 Cases / 50 个 statistical clusters（每簇
+  2 Cases）固定提交在
   `data/evaluation_cases/v1/cases.jsonl` 与 `manifest.json`，且目录不可变；Development
   与 Public Validation 分别绑定独立数据快照。
 - **跨平台并发保护：** 数据快照与 Cases 发布统一使用锁定依赖 `filelock`，锁文件位于
@@ -182,16 +184,18 @@ data/synthetic/{public_validation_dataset_version}/data_quality_report.json
 
 ### Case 分布
 
-- 总数：100。
+- 总数：100 Cases / 50 statistical clusters（每簇 2 Cases）。
 - 五类业务任务：每类 20。
 - 十类能力标签：每类 10 个 Primary Capability。
 - 难度：`easy=30`、`medium=40`、`hard=30`。
 - Split：`development=70`、`public_validation=30`。
 - 每个业务任务在 development 中 14 个、public_validation 中 6 个。
 - Public Validation 十类主要能力各 3 个 Case，难度 easy/medium/hard 为 9/12/9。
-- Public Validation 是公开验证集，不是盲测；统计推断以 `statistical_cluster_id`
-  为单位。Optimized V2 的方案、Prompt、实现与评分协议冻结后，再生成此前未见的
-  最终盲测集。
+- Public Validation 是公开验证集，不是盲测。V1/V2 结果按 `case_id` 对齐和配对；
+  统计推断、Cluster Bootstrap 与有效样本量以 `statistical_cluster_id` 为单位。
+  McNemar 等二元配对检验不得直接把 Case 对视为独立样本，必须先定义簇级汇总或使用
+  适合聚类数据的方法；具体口径在 Phase 7 实施前冻结。Optimized V2 的方案、Prompt、
+  实现与评分协议冻结后，再生成此前未见的最终盲测集。
 
 ---
 
@@ -2311,7 +2315,7 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 
 ---
 
-### Task 11: 生成并冻结 100 个 Evaluation Cases
+### Task 11: 生成并冻结 100 个 Evaluation Cases / 50 个 statistical clusters
 
 **Files:**
 - Create: `configs/data/synthetic_public_validation_v1.yaml`
@@ -2327,11 +2331,14 @@ git commit -m "feat(evaluation-data): derive gold evidence with independent sql"
 
 - Development 与 Public Validation 分别由 `synthetic_v1.yaml`、`synthetic_public_validation_v1.yaml`
   生成独立不可变数据快照；Case 必须按 Split 绑定对应 Dataset ID、版本和配置哈希。
-- Case 总量固定 100；每个业务任务固定 Development 14 / Public Validation 6；全集每个能力
-  固定 10，Public Validation 十类能力各 3，难度固定为 9/12/9。
+- Case 总量固定 100，对应 50 个 statistical clusters（每簇 2 Cases）；每个业务任务
+  固定 Development 14 / Public Validation 6；全集每个能力固定 10，Public Validation
+  十类能力各 3，难度固定为 9/12/9。
 - 每个 Case 顶层记录 `statistical_cluster_id`；同一
-  `business_task + primary_capability` 的复述变体共享 cluster。统计分析按 cluster
-  聚合或重采样，不把同簇 Case 当作独立样本。
+  `business_task + primary_capability` 的复述变体共享 cluster。V1/V2 结果按
+  `case_id` 对齐和配对；统计推断、Cluster Bootstrap 和有效样本量按 cluster 处理，
+  不把同簇 Case 当作独立样本。McNemar 等二元配对检验必须先定义簇级汇总或使用适合
+  聚类数据的方法，具体口径在 Phase 7 实施前冻结。
 - Public Validation 是公开验证集，不是盲测。Optimized V2 的方案、Prompt、实现与
   评分协议冻结后，才生成此前未见的最终盲测集。
 - 商品列表类问题固定显式要求 `Top-3`；`gold_metrics` 与
@@ -2963,7 +2970,7 @@ git diff --check
 Expected:
 
 - `make phase1` 在干净输出根目录成功生成两套五张 Parquet、Dataset Manifest、质量报告、
-  100 Cases 和 Case Manifest。
+  100 Cases / 50 statistical clusters 和 Case Manifest。
 - 干净构建的 16 个文件与 `data/synthetic/phase1_sha256_baseline.json` 逐字节一致。
 - 全部测试 PASS。
 - Ruff 无错误。
@@ -2985,7 +2992,7 @@ Expected:
 - 五表 Parquet 数据快照
 - Dataset Manifest 与文件哈希
 - 数据质量报告
-- 100 个 Evaluation Cases
+- 100 个 Evaluation Cases / 50 个 statistical clusters
 - Case Manifest 与 Development/Public Validation 分布
 
 Phase 1 尚未运行 Agent，因此所有 Agent Evaluation 结果仍为 `Pending / Not Run`。
@@ -3042,7 +3049,7 @@ Expected:
 - [x] DuckDB 只读加载前验证文件哈希。
 - [x] Gold SQL 不读取异常注入配置。
 - [x] 五类业务任务均有 Gold Evidence。
-- [x] 精确生成 100 个 Evaluation Cases。
+- [x] 精确生成 100 个 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases）。
 - [x] 五类业务任务各 20 Cases。
 - [x] 十类 Primary Capability 各 10 Cases。
 - [x] 难度分布为 30/40/30。
@@ -3067,7 +3074,7 @@ Expected:
 
 - 同一配置无法生成相同 Dataset ID。
 - Gold SQL 与异常配置直接耦合。
-- 100 Cases 的覆盖或 Split 不满足固定分布。
+- 100 Cases / 50 statistical clusters 的覆盖、簇大小或 Split 不满足固定分布。
 - 数据质量检查失败。
 - 测试或 Ruff 未通过。
 - 生成产物包含 API Key、真实用户数据或未经运行的效果结论。
