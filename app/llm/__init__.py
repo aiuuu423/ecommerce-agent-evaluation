@@ -1,7 +1,7 @@
 """LLM adapter contracts and deterministic test infrastructure."""
 
 from app.llm.base import LLMAdapter
-from app.llm.deterministic import DeterministicAdapter, DeterministicPlan
+from app.llm.deterministic import DeterministicAdapter
 from app.llm.schemas import (
     AdapterRequest,
     AdapterResponse,
@@ -15,7 +15,6 @@ __all__ = [
     "AdapterResponse",
     "AssistantAction",
     "DeterministicAdapter",
-    "DeterministicPlan",
     "LLMAdapter",
     "ToolCall",
     "Usage",
