@@ -10,6 +10,7 @@ from app.tools.base import (
     ToolOutputValidationError,
     UnknownToolError,
 )
+from app.tools.queries import query_product
 from app.tools.schemas import (
     AnyToolResult,
     CalculateMetricsInput,
@@ -105,6 +106,7 @@ def _definition(
     description: str,
     input_model: type[BaseModel],
     output_model: type[BaseModel],
+    handler: Callable[[Any, ToolContext], AnyToolResult] = _not_implemented,
     output_validator: Callable[[Any, Any], None] | None = None,
 ) -> ToolDefinition[Any, Any]:
     return ToolDefinition(
@@ -112,7 +114,7 @@ def _definition(
         description=description,
         input_model=input_model,
         output_model=output_model,
-        handler=_not_implemented,
+        handler=handler,
         output_validator=output_validator,
     )
 
@@ -125,6 +127,7 @@ def build_default_registry() -> ToolRegistry:
             description="Return product attributes for the requested product IDs.",
             input_model=QueryProductInput,
             output_model=QueryProductResult,
+            handler=query_product,
         ),
         _definition(
             name="query_sales",
