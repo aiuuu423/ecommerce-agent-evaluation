@@ -313,17 +313,23 @@ class OpenAICompatibleAdapter:
         if not isinstance(arguments, dict):
             raise OpenAIProtocolError("function arguments must be a JSON object")
         _validate_json_value(arguments, "function arguments")
+        try:
+            parsed_tool_call = ToolCall(
+                call_id=call_id,
+                name=name,
+                arguments=arguments,
+            )
+        except ValidationError:
+            parsed_tool_call = None
+        if parsed_tool_call is None:
+            raise OpenAIProtocolError("tool call id must be a safe ASCII identifier")
 
         assistant_message = deepcopy(message)
         assistant_message["role"] = "assistant"
         self._messages.append(assistant_message)
         self._pending_call_id = call_id
         self._pending_arguments = deepcopy(arguments)
-        return AssistantAction(
-            tool_calls=[
-                ToolCall(call_id=call_id, name=name, arguments=arguments)
-            ]
-        )
+        return AssistantAction(tool_calls=[parsed_tool_call])
 
     @staticmethod
     def _parse_usage(payload: dict[str, JsonValue]) -> Usage | None:

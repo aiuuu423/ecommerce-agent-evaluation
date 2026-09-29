@@ -12,7 +12,7 @@ class AdapterModel(BaseModel):
 
 
 class ToolCall(AdapterModel):
-    call_id: str = Field(min_length=1)
+    call_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
     name: str = Field(min_length=1)
     arguments: dict[str, JsonValue]
 

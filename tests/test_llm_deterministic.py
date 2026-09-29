@@ -78,6 +78,26 @@ def test_action_requires_exactly_one_mode() -> None:
         AssistantAction(tool_calls=[call, call.model_copy(update={"call_id": "c2"})])
 
 
+@pytest.mark.parametrize(
+    "call_id",
+    [
+        "api_key=sk-secret",
+        "path=/tmp/private/key",
+        "sql=DROP TABLE sales",
+        "x" * 129,
+        " call_0001 ",
+    ],
+)
+def test_tool_call_rejects_unsafe_call_id(call_id: str) -> None:
+    with pytest.raises(ValidationError):
+        ToolCall(call_id=call_id, name="query_product", arguments={})
+
+
+def test_tool_call_accepts_safe_ascii_identifier_boundaries() -> None:
+    assert ToolCall(call_id="A-z_0-9", name="query_product", arguments={}).call_id == "A-z_0-9"
+    assert ToolCall(call_id="x" * 128, name="query_product", arguments={}).call_id == "x" * 128
+
+
 @pytest.mark.parametrize("bad_value", [True, 1.5, "1", -1])
 def test_usage_requires_non_negative_strict_integers(bad_value: Any) -> None:
     with pytest.raises(ValidationError):

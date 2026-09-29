@@ -19,6 +19,7 @@ from app.tools.schemas import AnyToolResult, JsonValue, PriorToolExecution
 ERROR_SUMMARIES = {
     "adapter_start_error": "Adapter initialization failed.",
     "adapter_error": "Adapter request failed.",
+    "adapter_protocol_error": "Adapter response violated the protocol.",
     "duplicate_call_id": "Tool call identifier was reused.",
     "unknown_tool": "Requested tool is unavailable.",
     "invalid_arguments": "Tool arguments failed validation.",
@@ -224,6 +225,14 @@ class AgentRunner:
             trace.adapter_request(adapter_request)
             try:
                 untrusted_response = self._adapter.complete(adapter_request)
+            except Exception:
+                return _failed(
+                    trace,
+                    executions,
+                    usage,
+                    "adapter_error",
+                )
+            try:
                 response = AdapterResponse.model_validate(
                     untrusted_response.model_dump(mode="python"),
                     strict=True,
@@ -233,7 +242,7 @@ class AgentRunner:
                     trace,
                     executions,
                     usage,
-                    "adapter_error",
+                    "adapter_protocol_error",
                 )
             trace.adapter_response(response.action, response.usage)
             usage.add(response.usage)

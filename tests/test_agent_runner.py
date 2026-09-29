@@ -707,9 +707,59 @@ def test_runner_strictly_revalidates_untrusted_custom_adapter_response(
         )
         assert result.status == "failed"
         assert result.prior_tool_executions == []
-        assert result.decision_trace[-1].payload["code"] == "adapter_error"
-        assert result.decision_trace[-1].payload["summary"] == "Adapter request failed."
+        assert result.decision_trace[-1].payload["code"] == "adapter_protocol_error"
+        assert (
+            result.decision_trace[-1].payload["summary"]
+            == "Adapter response violated the protocol."
+        )
         registry.invoke.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "malicious_call_id",
+    [
+        "api_key=sk-secret",
+        "path=/tmp/private/key",
+        "sql=DROP TABLE sales",
+        "x" * 129,
+        " call_0001 ",
+    ],
+)
+def test_runner_rejects_unsafe_call_id_without_leaking_it(
+    malicious_call_id: str,
+    catalog: Catalog,
+) -> None:
+    untrusted_call = ToolCall.model_construct(
+        call_id=malicious_call_id,
+        name="query_product",
+        arguments={"product_ids": ["P001"]},
+    )
+    untrusted_action = AssistantAction.model_construct(
+        tool_calls=[untrusted_call],
+        final_answer=None,
+    )
+    adapter = CustomAdapter(
+        AdapterResponse.model_construct(
+            action=untrusted_action,
+            raw_response=None,
+            usage=None,
+        )
+    )
+    registry = mock.Mock(wraps=build_default_registry())
+
+    result = AgentRunner(registry=registry, adapter=adapter).run(
+        RunRequest(user_input="x"),
+        catalog,
+    )
+
+    assert result.status == "failed"
+    assert result.prior_tool_executions == []
+    assert result.decision_trace[-1].payload == {
+        "code": "adapter_protocol_error",
+        "summary": "Adapter response violated the protocol.",
+    }
+    assert malicious_call_id not in result.model_dump_json()
+    registry.invoke.assert_not_called()
 
 
 def test_runner_starts_each_run_and_does_not_leak_previous_state(

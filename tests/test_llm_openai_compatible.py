@@ -440,6 +440,25 @@ def test_openai_adapter_rejects_malformed_provider_payload(
         adapter.complete(sample_request())
 
 
+@pytest.mark.parametrize(
+    "call_id",
+    [
+        "api_key=sk-secret",
+        "path=/tmp/private/key",
+        "sql=DROP TABLE sales",
+        "x" * 129,
+        " call_abc ",
+    ],
+)
+def test_openai_adapter_rejects_unsafe_tool_call_id(call_id: str) -> None:
+    adapter = adapter_with(SequenceTransport([tool_payload(call_id=call_id)]))
+
+    with pytest.raises(OpenAIProtocolError, match="safe ASCII identifier") as captured:
+        adapter.complete(sample_request())
+
+    assert all(call_id not in repr(item) for item in exception_chain(captured.value))
+
+
 def test_complete_restores_initial_state_after_transport_failure_and_can_retry() -> None:
     transport = FailingOnceTransport([answer_payload("retry succeeded")])
     adapter = adapter_with(transport)
