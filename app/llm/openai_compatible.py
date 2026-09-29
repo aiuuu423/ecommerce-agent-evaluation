@@ -54,22 +54,32 @@ class UrllibJsonTransport:
             headers=headers,
             method="POST",
         )
+        http_status: int | None = None
+        request_failed = False
         try:
             with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read()
         except urllib.error.HTTPError as exc:
+            http_status = exc.code
+            exc.close()
+        except (urllib.error.URLError, TimeoutError, OSError):
+            request_failed = True
+        if http_status is not None:
             raise OpenAITransportError(
-                f"provider returned HTTP {exc.code}"
-            ) from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise OpenAITransportError("provider request failed") from exc
+                f"provider returned HTTP {http_status}"
+            ) from None
+        if request_failed:
+            raise OpenAITransportError("provider request failed") from None
 
+        invalid_json = False
         try:
             parsed = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            invalid_json = True
+        if invalid_json:
             raise OpenAIProtocolError(
                 "provider response must contain valid JSON"
-            ) from exc
+            ) from None
         if not isinstance(parsed, dict):
             raise OpenAIProtocolError("provider response must be a JSON object")
         _validate_json_value(parsed, "provider response")
@@ -293,10 +303,15 @@ class OpenAICompatibleAdapter:
 
 def _validate_base_url(value: object) -> str:
     base_url = _validate_non_empty_string(value, "base_url").rstrip("/")
-    parsed = urlsplit(base_url)
+    try:
+        parsed = urlsplit(base_url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError:
+        raise ValueError("base_url must be an http(s) URL with a host") from None
     if (
         parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
+        or hostname is None
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query

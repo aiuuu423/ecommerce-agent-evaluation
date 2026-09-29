@@ -1,4 +1,6 @@
+import io
 import json
+import urllib.error
 from copy import deepcopy
 from typing import Any
 
@@ -7,6 +9,8 @@ import pytest
 from app.llm.openai_compatible import (
     OpenAICompatibleAdapter,
     OpenAIProtocolError,
+    OpenAITransportError,
+    UrllibJsonTransport,
 )
 from app.llm.schemas import AdapterRequest
 from app.tools.schemas import PriorToolExecution, QueryProductResult
@@ -154,12 +158,23 @@ def execution_for(call_id: str = "call_abc") -> PriorToolExecution:
     )
 
 
+def exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [
         ({"base_url": ""}, "base_url"),
         ({"base_url": "file:///tmp/provider"}, "base_url"),
         ({"base_url": "https:///v1"}, "base_url"),
+        ({"base_url": "https://:443"}, "base_url"),
+        ({"base_url": "https://example.test:invalid/v1"}, "base_url"),
         ({"api_key": ""}, "api_key"),
         ({"model": "  "}, "model"),
         ({"temperature": float("nan")}, "temperature"),
@@ -358,6 +373,80 @@ def test_openai_adapter_rejects_malformed_provider_payload(
     adapter = adapter_with(SequenceTransport([payload]))
     with pytest.raises(OpenAIProtocolError, match=message):
         adapter.complete(sample_request())
+
+
+def test_urllib_transport_http_error_chain_does_not_expose_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive = b'{"secret":"http-body-sensitive"}'
+
+    def fail_with_http_error(*_args: object, **_kwargs: object) -> None:
+        raise urllib.error.HTTPError(
+            "https://example.test/v1/chat/completions",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(sensitive),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_with_http_error)
+
+    with pytest.raises(OpenAITransportError) as captured:
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": "Bearer request-key-sensitive"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert all(sensitive.decode() not in repr(item) for item in exception_chain(captured.value))
+
+
+def test_urllib_transport_url_error_chain_does_not_expose_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive = "url-error-request-key-sensitive"
+
+    def fail_with_url_error(*_args: object, **_kwargs: object) -> None:
+        raise urllib.error.URLError(f"connection rejected for {sensitive}")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_with_url_error)
+
+    with pytest.raises(OpenAITransportError) as captured:
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": f"Bearer {sensitive}"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert all(sensitive not in repr(item) for item in exception_chain(captured.value))
+
+
+def test_urllib_transport_invalid_json_chain_does_not_expose_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive = b"invalid-json-response-sensitive"
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(sensitive),
+    )
+
+    with pytest.raises(OpenAIProtocolError) as captured:
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": "Bearer request-key-sensitive"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert all(sensitive.decode() not in repr(item) for item in exception_chain(captured.value))
 
 
 def test_fake_transport_stays_offline_and_receives_key_only_in_header(
