@@ -482,6 +482,100 @@ def test_cvr_requires_each_period_to_have_its_complete_dynamic_window() -> None:
     assert row.traffic_change_rate == pytest.approx((80 - 50) / 50)
 
 
+@pytest.mark.parametrize("group_by", [[], ["category"]])
+def test_multi_product_cvr_requires_complete_windows_per_group(
+    group_by: list[str],
+) -> None:
+    sales = execution(
+        "query_sales",
+        [
+            sales_row("current", "P001", orders=3),
+            sales_row("previous", "P001", orders=2),
+            sales_row("current", "P002", orders=2),
+            sales_row("previous", "P002", orders=1),
+        ],
+    )
+    traffic = execution(
+        "query_traffic",
+        [
+            traffic_row("current", "P001", visits=80),
+            traffic_row("previous", "P001", visits=50),
+            traffic_row("current", "P002", visits=20),
+            traffic_row("previous", "P002", visits=25),
+        ],
+    )
+
+    result = calculate_metrics(
+        CalculateMetricsInput(
+            metrics=[
+                "current_cvr",
+                "previous_cvr",
+                "cvr_change",
+                "cvr_change_rate",
+            ],
+            group_by=group_by,
+        ),
+        context_with(sales, traffic),
+    )
+
+    assert result.row_count == 1
+    row = result.rows[0]
+    assert row.category == ("A" if group_by else None)
+    assert row.current_cvr == pytest.approx(5 / 100)
+    assert row.previous_cvr == pytest.approx(3 / 75)
+    assert row.cvr_change == pytest.approx((5 / 100) - (3 / 75))
+    assert row.cvr_change_rate == pytest.approx(((5 / 100) - (3 / 75)) / (3 / 75))
+
+
+@pytest.mark.parametrize("group_by", [[], ["category"]])
+def test_multi_product_cvr_is_none_when_any_product_is_incomplete(
+    group_by: list[str],
+) -> None:
+    sales = execution(
+        "query_sales",
+        [
+            sales_row("current", "P001", orders=3),
+            sales_row("previous", "P001", orders=2),
+            sales_row("current", "P002", orders=2),
+            sales_row("previous", "P002", orders=1),
+        ],
+    )
+    traffic = execution(
+        "query_traffic",
+        [
+            traffic_row("current", "P001", visits=80),
+            traffic_row("previous", "P001", visits=50),
+            traffic_row(
+                "current",
+                "P002",
+                visits=20,
+                observed_days=29,
+                missing_days=1,
+            ),
+            traffic_row("previous", "P002", visits=25),
+        ],
+    )
+
+    result = calculate_metrics(
+        CalculateMetricsInput(
+            metrics=[
+                "current_cvr",
+                "previous_cvr",
+                "cvr_change",
+                "cvr_change_rate",
+            ],
+            group_by=group_by,
+        ),
+        context_with(sales, traffic),
+    )
+
+    row = result.rows[0]
+    assert row.current_cvr is None
+    assert row.previous_cvr == pytest.approx(3 / 75)
+    assert row.cvr_change is None
+    assert row.cvr_change_rate is None
+
+
 def test_evidence_value_priority_and_grouping_contract() -> None:
     sales, traffic, _marketing = compatible_sources()
     result = calculate_metrics(

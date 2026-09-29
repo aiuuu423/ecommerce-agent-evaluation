@@ -178,12 +178,17 @@ def _aggregate_sources(
 ) -> tuple[
     dict[tuple[Any, ...], dict[str, dict[str, dict[str, float | int]]]],
     set[tuple[Any, ...]],
+    dict[tuple[Any, ...], dict[str, dict[str, int]]],
 ]:
     aggregates: dict[
         tuple[Any, ...],
         dict[str, dict[str, dict[str, float | int]]],
     ] = {}
     group_keys: set[tuple[Any, ...]] = {()} if not group_by else set()
+    traffic_observed_days: dict[
+        tuple[Any, ...],
+        dict[str, dict[str, int]],
+    ] = {}
 
     for tool_name, execution in sources.items():
         seen_natural_keys: set[tuple[Any, ...]] = set()
@@ -198,6 +203,12 @@ def _aggregate_sources(
             group_key = tuple(_row_value(row, field) for field in group_by)
             group_keys.add(group_key)
             period = _row_value(row, "period")
+            if tool_name == "query_traffic":
+                traffic_observed_days.setdefault(group_key, {}).setdefault(
+                    period, {}
+                )[_row_value(row, "product_id")] = _row_value(
+                    row, "observed_days"
+                )
             values = (
                 aggregates
                 .setdefault(group_key, {})
@@ -207,7 +218,7 @@ def _aggregate_sources(
             for field in _ADDITIVE_FIELDS[tool_name]:
                 values[field] = values.get(field, 0) + _row_value(row, field)
 
-    return aggregates, group_keys
+    return aggregates, group_keys, traffic_observed_days
 
 
 def _period_values(
@@ -236,6 +247,7 @@ def _difference_rate(current: float | int | None, previous: float | int | None):
 def _calculate_values(
     aggregate: dict[str, dict[str, dict[str, float | int]]],
     expected_days: dict[str, int],
+    observed_days_by_product: dict[str, dict[str, int]],
 ) -> dict[str, float | int | None]:
     current_gmv = _number(aggregate, "query_sales", "current", "gmv")
     previous_gmv = _number(aggregate, "query_sales", "previous", "gmv")
@@ -261,11 +273,25 @@ def _calculate_values(
         aggregate, "query_traffic", "previous", "observed_days"
     )
 
+    product_ids = {
+        product_id
+        for period_values in observed_days_by_product.values()
+        for product_id in period_values
+    }
+    complete_periods = {
+        period: bool(product_ids)
+        and all(
+            observed_days_by_product.get(period, {}).get(product_id)
+            == period_expected_days
+            for product_id in product_ids
+        )
+        for period, period_expected_days in expected_days.items()
+    }
     current_cvr = None
-    if current_observed_days == expected_days["current"]:
+    if complete_periods["current"]:
         current_cvr = safe_divide(current_orders, current_visits)
     previous_cvr = None
-    if previous_observed_days == expected_days["previous"]:
+    if complete_periods["previous"]:
         previous_cvr = safe_divide(previous_orders, previous_visits)
     cvr_change = None
     if current_cvr is not None and previous_cvr is not None:
@@ -280,10 +306,7 @@ def _calculate_values(
     traffic_change_rate = _difference_rate(current_visits, previous_visits)
 
     evidence_value = None
-    if (
-        current_observed_days != expected_days["current"]
-        or previous_observed_days != expected_days["previous"]
-    ):
+    if not complete_periods["current"] or not complete_periods["previous"]:
         evidence_value = float(
             min(current_observed_days, previous_observed_days)
         )
@@ -360,12 +383,18 @@ def calculate_metrics(
     _validate_source_compatibility(sources, normalized_arguments, context)
     group_by = [dimension.value for dimension in args.group_by]
     _validate_grouping(sources, group_by)
-    aggregates, group_keys = _aggregate_sources(sources, group_by)
+    aggregates, group_keys, traffic_observed_days = _aggregate_sources(
+        sources, group_by
+    )
     expected_days = _expected_days(normalized_arguments)
 
     rows: list[CalculateMetricsRow] = []
     for group_key in sorted(group_keys):
-        values = _calculate_values(aggregates.get(group_key, {}), expected_days)
+        values = _calculate_values(
+            aggregates.get(group_key, {}),
+            expected_days,
+            traffic_observed_days.get(group_key, {}),
+        )
         payload = _group_payload(group_by, group_key)
         payload.update({metric.value: values[metric.value] for metric in args.metrics})
         rows.append(CalculateMetricsRow.model_validate(payload))
