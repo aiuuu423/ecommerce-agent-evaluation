@@ -96,6 +96,75 @@ def catalog_with_one_traffic_day_omitted() -> Iterator[Catalog]:
         yield opened
 
 
+@pytest.fixture
+def catalog_with_multi_campaign_marketing() -> Iterator[Catalog]:
+    products = pd.DataFrame(
+        [{"product_id": "P001", "category": "test"}]
+    )
+    marketing = pd.DataFrame(
+        [
+            {
+                "date": date(2026, 4, 2),
+                "product_id": "P001",
+                "campaign_id": "C002",
+                "spend": Decimal("11.00"),
+            },
+            {
+                "date": date(2026, 3, 30),
+                "product_id": "P001",
+                "campaign_id": "C002",
+                "spend": Decimal("7.00"),
+            },
+            {
+                "date": date(2026, 4, 2),
+                "product_id": "P001",
+                "campaign_id": "C001",
+                "spend": Decimal("13.00"),
+            },
+            {
+                "date": date(2026, 3, 30),
+                "product_id": "P001",
+                "campaign_id": "C001",
+                "spend": Decimal("3.00"),
+            },
+            {
+                "date": date(2026, 4, 2),
+                "product_id": "P001",
+                "campaign_id": "C001",
+                "spend": Decimal("17.00"),
+            },
+            {
+                "date": date(2026, 3, 30),
+                "product_id": "P001",
+                "campaign_id": "C002",
+                "spend": Decimal("5.00"),
+            },
+        ]
+    )
+    tables = {
+        "products": products,
+        "customers": pd.DataFrame(),
+        "traffic": pd.DataFrame(),
+        "marketing": marketing,
+        "orders": pd.DataFrame(),
+    }
+    manifest = {
+        "dataset_id": "0123456789abcdef",
+        "dataset_version": "test",
+        "source_label": "Synthetic E-commerce Data",
+        "tables": {
+            name: {"rows": len(frame)}
+            for name, frame in tables.items()
+        },
+    }
+    connection = duckdb.connect(database=":memory:")
+    for name, frame in tables.items():
+        if len(frame.columns):
+            connection.register(name, frame)
+    with Catalog(connection, tables, manifest) as opened:
+        yield opened
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -469,6 +538,38 @@ def test_query_marketing_empty_product_filter_and_stable_campaign_sort(
         result.rows,
         key=lambda row: (row.period, row.product_id, row.category, row.campaign_id),
     )
+
+
+def test_query_marketing_aggregates_each_campaign_and_sorts_across_periods(
+    catalog_with_multi_campaign_marketing: Catalog,
+) -> None:
+    context = ToolContext(
+        catalog=catalog_with_multi_campaign_marketing,
+        prior_executions=(),
+        next_result_id=lambda: "result_0007",
+    )
+
+    result = build_default_registry().invoke(
+        "query_marketing",
+        {
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-03",
+            "comparison_start_date": "2026-03-29",
+            "comparison_end_date": "2026-03-31",
+            "product_ids": ["P001"],
+        },
+        context,
+    )
+
+    assert [
+        (row.period, row.product_id, row.category, row.campaign_id, row.spend)
+        for row in result.rows
+    ] == [
+        ("current", "P001", "test", "C001", 30.0),
+        ("current", "P001", "test", "C002", 11.0),
+        ("previous", "P001", "test", "C001", 3.0),
+        ("previous", "P001", "test", "C002", 12.0),
+    ]
 
 
 def test_query_marketing_accepts_366_day_window_at_execution_boundary(
