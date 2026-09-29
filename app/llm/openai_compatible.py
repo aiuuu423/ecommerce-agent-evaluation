@@ -18,6 +18,9 @@ from app.llm.schemas import (
 )
 from app.tools.schemas import JsonValue, PriorToolExecution, canonical_tool_result_payload
 
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_JSON_DEPTH = 64
+
 
 class OpenAITransportError(RuntimeError):
     """A provider request failed without exposing provider response details."""
@@ -39,6 +42,19 @@ class JsonTransport(Protocol):
         raise NotImplementedError
 
 
+class _RejectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> None:
+        return None
+
+
 class UrllibJsonTransport:
     def post(
         self,
@@ -57,8 +73,20 @@ class UrllibJsonTransport:
         http_status: int | None = None
         request_failed = False
         try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                body = response.read()
+            opener = urllib.request.build_opener(_RejectRedirectHandler())
+            with opener.open(request, timeout=timeout_seconds) as response:
+                content_length = response.headers.get("Content-Length")
+                try:
+                    declared_length = (
+                        int(content_length) if content_length is not None else None
+                    )
+                except (TypeError, ValueError):
+                    declared_length = None
+                if declared_length is not None and declared_length > MAX_RESPONSE_BYTES:
+                    raise OpenAITransportError(
+                        "provider response is too large"
+                    ) from None
+                body = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
             http_status = exc.code
             exc.close()
@@ -70,11 +98,13 @@ class UrllibJsonTransport:
             ) from None
         if request_failed:
             raise OpenAITransportError("provider request failed") from None
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise OpenAITransportError("provider response is too large") from None
 
         invalid_json = False
         try:
             parsed = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
             invalid_json = True
         if invalid_json:
             raise OpenAIProtocolError(
@@ -119,34 +149,55 @@ class OpenAICompatibleAdapter:
         self._sent_call_ids: set[str] = set()
 
     def complete(self, request: AdapterRequest) -> AdapterResponse:
-        self._advance_transcript(request)
-        payload: dict[str, JsonValue] = {
-            "model": self._model,
-            "messages": deepcopy(self._messages),
-            "tools": deepcopy(request.tools),
-            "tool_choice": "auto",
-            "temperature": self._temperature,
-        }
-        raw_response = self._transport.post(
-            f"{self._base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            payload=payload,
-            timeout_seconds=self._timeout_seconds,
+        snapshot = (
+            deepcopy(self._messages),
+            self._user_input,
+            deepcopy(self._tools),
+            self._pending_call_id,
+            deepcopy(self._pending_arguments),
+            deepcopy(self._sent_executions),
+            set(self._sent_call_ids),
         )
-        if not isinstance(raw_response, dict):
-            raise OpenAIProtocolError("provider response must be a JSON object")
-        _validate_json_value(raw_response, "provider response")
-        normalized = deepcopy(raw_response)
-        action = self._parse_action(normalized)
-        usage = self._parse_usage(normalized)
-        return AdapterResponse(
-            action=action,
-            raw_response=normalized,
-            usage=usage,
-        )
+        try:
+            self._advance_transcript(request)
+            payload: dict[str, JsonValue] = {
+                "model": self._model,
+                "messages": deepcopy(self._messages),
+                "tools": deepcopy(request.tools),
+                "tool_choice": "auto",
+                "temperature": self._temperature,
+            }
+            raw_response = self._transport.post(
+                f"{self._base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                payload=payload,
+                timeout_seconds=self._timeout_seconds,
+            )
+            if not isinstance(raw_response, dict):
+                raise OpenAIProtocolError("provider response must be a JSON object")
+            _validate_json_value(raw_response, "provider response")
+            normalized = deepcopy(raw_response)
+            action = self._parse_action(normalized)
+            usage = self._parse_usage(normalized)
+            return AdapterResponse(
+                action=action,
+                raw_response=normalized,
+                usage=usage,
+            )
+        except Exception:
+            (
+                self._messages,
+                self._user_input,
+                self._tools,
+                self._pending_call_id,
+                self._pending_arguments,
+                self._sent_executions,
+                self._sent_call_ids,
+            ) = snapshot
+            raise
 
     def _advance_transcript(self, request: AdapterRequest) -> None:
         if self._user_input is None:
@@ -255,10 +306,10 @@ class OpenAICompatibleAdapter:
             raise OpenAIProtocolError("function arguments must be valid JSON")
         try:
             arguments = json.loads(encoded_arguments)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError):
             raise OpenAIProtocolError(
                 "function arguments must be valid JSON"
-            ) from exc
+            ) from None
         if not isinstance(arguments, dict):
             raise OpenAIProtocolError("function arguments must be a JSON object")
         _validate_json_value(arguments, "function arguments")
@@ -298,7 +349,7 @@ class OpenAICompatibleAdapter:
                 if "total_tokens" in str(exc)
                 else "usage token fields must be non-negative integers"
             )
-            raise OpenAIProtocolError(message) from exc
+            raise OpenAIProtocolError(message) from None
 
 
 def _validate_base_url(value: object) -> str:
@@ -349,7 +400,9 @@ def _execution_payload(execution: PriorToolExecution) -> dict[str, JsonValue]:
     return execution.model_dump(mode="json")
 
 
-def _validate_json_value(value: object, location: str) -> None:
+def _validate_json_value(value: object, location: str, depth: int = 0) -> None:
+    if depth > MAX_JSON_DEPTH:
+        raise OpenAIProtocolError(f"{location} exceeds maximum JSON nesting depth")
     if value is None or isinstance(value, (bool, str)):
         return
     if isinstance(value, int):
@@ -360,12 +413,12 @@ def _validate_json_value(value: object, location: str) -> None:
         raise OpenAIProtocolError(f"{location} contains a non-finite number")
     if isinstance(value, list):
         for item in value:
-            _validate_json_value(item, location)
+            _validate_json_value(item, location, depth + 1)
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise OpenAIProtocolError(f"{location} contains a non-string key")
-            _validate_json_value(item, location)
+            _validate_json_value(item, location, depth + 1)
         return
     raise OpenAIProtocolError(f"{location} contains a non-JSON value")

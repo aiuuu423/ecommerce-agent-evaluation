@@ -1,6 +1,7 @@
 import io
 import json
 import urllib.error
+import urllib.request
 from copy import deepcopy
 from typing import Any
 
@@ -36,6 +37,58 @@ class SequenceTransport:
         self.payloads.append(deepcopy(payload))
         assert timeout_seconds == 30.0
         return self.responses[len(self.payloads) - 1]
+
+
+class FailingOnceTransport(SequenceTransport):
+    def post(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        if not self.payloads:
+            self.urls.append(url)
+            self.headers.append(deepcopy(headers))
+            self.payloads.append(deepcopy(payload))
+            raise OpenAITransportError("provider request failed")
+        self.urls.append(url)
+        self.headers.append(deepcopy(headers))
+        self.payloads.append(deepcopy(payload))
+        assert timeout_seconds == 30.0
+        return self.responses[0]
+
+
+class StubResponse(io.BytesIO):
+    def __init__(self, body: bytes, content_length: str | None = None) -> None:
+        super().__init__(body)
+        self.headers = {} if content_length is None else {"Content-Length": content_length}
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return super().read(size)
+
+
+def patch_transport_response(
+    monkeypatch: pytest.MonkeyPatch,
+    response_or_error: StubResponse | BaseException,
+) -> None:
+    def open_response(*_args: object, **_kwargs: object) -> StubResponse:
+        if isinstance(response_or_error, BaseException):
+            raise response_or_error
+        return response_or_error
+
+    class StubOpener:
+        def open(self, *_args: object, **_kwargs: object) -> StubResponse:
+            return open_response()
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener",
+        lambda *_handlers: StubOpener(),
+    )
+    monkeypatch.setattr("urllib.request.urlopen", open_response)
 
 
 def answer_payload(
@@ -155,6 +208,18 @@ def execution_for(call_id: str = "call_abc") -> PriorToolExecution:
         call_id=call_id,
         arguments={"product_ids": ["P001"]},
         result=sample_product_result(),
+    )
+
+
+def adapter_state(adapter: OpenAICompatibleAdapter) -> tuple[Any, ...]:
+    return (
+        deepcopy(adapter._messages),
+        adapter._user_input,
+        deepcopy(adapter._tools),
+        adapter._pending_call_id,
+        deepcopy(adapter._pending_arguments),
+        deepcopy(adapter._sent_executions),
+        set(adapter._sent_call_ids),
     )
 
 
@@ -375,6 +440,67 @@ def test_openai_adapter_rejects_malformed_provider_payload(
         adapter.complete(sample_request())
 
 
+def test_complete_restores_initial_state_after_transport_failure_and_can_retry() -> None:
+    transport = FailingOnceTransport([answer_payload("retry succeeded")])
+    adapter = adapter_with(transport)
+    request = sample_request()
+    before = adapter_state(adapter)
+
+    with pytest.raises(OpenAITransportError):
+        adapter.complete(request)
+
+    assert adapter_state(adapter) == before
+    response = adapter.complete(request)
+
+    assert response.action.final_answer == "retry succeeded"
+    assert transport.payloads[0]["messages"] == [{"role": "user", "content": "查看 P001"}]
+    assert transport.payloads[1]["messages"] == transport.payloads[0]["messages"]
+
+
+def test_complete_restores_pending_state_after_invalid_usage_and_can_retry() -> None:
+    invalid_usage = answer_payload(
+        "bad",
+        usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 99},
+    )
+    transport = SequenceTransport(
+        [tool_payload(), invalid_usage, answer_payload("retry succeeded")]
+    )
+    adapter = adapter_with(transport)
+    adapter.complete(sample_request())
+    request = sample_request(executions=[execution_for()])
+    before = adapter_state(adapter)
+
+    with pytest.raises(OpenAIProtocolError, match="total_tokens"):
+        adapter.complete(request)
+
+    assert adapter_state(adapter) == before
+    response = adapter.complete(request)
+
+    assert response.action.final_answer == "retry succeeded"
+    assert transport.payloads[2]["messages"] == transport.payloads[1]["messages"]
+    assert [message["role"] for message in transport.payloads[2]["messages"]] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+
+def test_complete_restores_initial_state_after_invalid_action_and_can_retry() -> None:
+    transport = SequenceTransport(
+        [{"choices": []}, answer_payload("retry succeeded")]
+    )
+    adapter = adapter_with(transport)
+    request = sample_request()
+    before = adapter_state(adapter)
+
+    with pytest.raises(OpenAIProtocolError, match="exactly one choice"):
+        adapter.complete(request)
+
+    assert adapter_state(adapter) == before
+    assert adapter.complete(request).action.final_answer == "retry succeeded"
+    assert transport.payloads[1]["messages"] == transport.payloads[0]["messages"]
+
+
 def test_urllib_transport_http_error_chain_does_not_expose_response_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -389,7 +515,15 @@ def test_urllib_transport_http_error_chain_does_not_expose_response_body(
             io.BytesIO(sensitive),
         )
 
-    monkeypatch.setattr("urllib.request.urlopen", fail_with_http_error)
+    class FailingOpener:
+        def open(self, *_args: object, **_kwargs: object) -> None:
+            fail_with_http_error()
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener",
+        lambda *_handlers: FailingOpener(),
+    )
+    monkeypatch.setattr("urllib.request.urlopen", FailingOpener().open)
 
     with pytest.raises(OpenAITransportError) as captured:
         UrllibJsonTransport().post(
@@ -412,7 +546,10 @@ def test_urllib_transport_url_error_chain_does_not_expose_key(
     def fail_with_url_error(*_args: object, **_kwargs: object) -> None:
         raise urllib.error.URLError(f"connection rejected for {sensitive}")
 
-    monkeypatch.setattr("urllib.request.urlopen", fail_with_url_error)
+    patch_transport_response(
+        monkeypatch,
+        urllib.error.URLError(f"connection rejected for {sensitive}"),
+    )
 
     with pytest.raises(OpenAITransportError) as captured:
         UrllibJsonTransport().post(
@@ -431,10 +568,7 @@ def test_urllib_transport_invalid_json_chain_does_not_expose_response_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sensitive = b"invalid-json-response-sensitive"
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda *_args, **_kwargs: io.BytesIO(sensitive),
-    )
+    patch_transport_response(monkeypatch, StubResponse(sensitive))
 
     with pytest.raises(OpenAIProtocolError) as captured:
         UrllibJsonTransport().post(
@@ -449,12 +583,168 @@ def test_urllib_transport_invalid_json_chain_does_not_expose_response_body(
     assert all(sensitive.decode() not in repr(item) for item in exception_chain(captured.value))
 
 
+def test_urllib_transport_disables_redirects_and_sanitizes_3xx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_key = "redirect-request-key-sensitive"
+    sensitive_location = "https://redirect.test/collect?key=location-sensitive"
+    second_requests: list[urllib.request.Request] = []
+
+    class RecordingOpener:
+        def __init__(self, handler: urllib.request.HTTPRedirectHandler) -> None:
+            self.handler = handler
+
+        def open(
+            self,
+            request: urllib.request.Request,
+            *,
+            timeout: float,
+        ) -> StubResponse:
+            redirected = self.handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {"Location": sensitive_location},
+                sensitive_location,
+            )
+            if redirected is not None:
+                second_requests.append(redirected)
+            raise urllib.error.HTTPError(
+                request.full_url,
+                302,
+                f"redirect to {sensitive_location}",
+                {"Location": sensitive_location},
+                None,
+            )
+
+    def build_opener(
+        handler: urllib.request.HTTPRedirectHandler,
+    ) -> RecordingOpener:
+        return RecordingOpener(handler)
+
+    monkeypatch.setattr("urllib.request.build_opener", build_opener)
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        RecordingOpener(urllib.request.HTTPRedirectHandler()).open,
+    )
+
+    with pytest.raises(OpenAITransportError, match="HTTP 302") as captured:
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": f"Bearer {sensitive_key}"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert second_requests == []
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert all(
+        sensitive_key not in repr(item) and sensitive_location not in repr(item)
+        for item in exception_chain(captured.value)
+    )
+
+
+def test_urllib_transport_rejects_declared_oversized_response_without_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = StubResponse(b"{}", content_length=str(2 * 1024 * 1024 + 1))
+    patch_transport_response(monkeypatch, response)
+
+    with pytest.raises(OpenAITransportError, match="too large") as captured:
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": "Bearer response-limit-key"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert response.read_sizes == []
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_urllib_transport_reads_limit_plus_one_and_rejects_oversized_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = StubResponse(b"x" * (2 * 1024 * 1024 + 1))
+    patch_transport_response(monkeypatch, response)
+
+    with pytest.raises(OpenAITransportError, match="too large"):
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": "Bearer response-limit-key"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert response.read_sizes == [2 * 1024 * 1024 + 1]
+
+
+def test_urllib_transport_sanitizes_unicode_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_transport_response(
+        monkeypatch,
+        StubResponse(b'{"choices":[{"message":{"content":"\xff"}}]}'),
+    )
+
+    with pytest.raises(OpenAIProtocolError, match="valid JSON") as captured:
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": "Bearer parse-key-sensitive"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_urllib_transport_sanitizes_json_recursion_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_transport_response(monkeypatch, StubResponse(b"{}"))
+
+    def recurse_forever(_value: object) -> Any:
+        raise RecursionError("sensitive parser detail")
+
+    monkeypatch.setattr(json, "loads", recurse_forever)
+
+    with pytest.raises(OpenAIProtocolError, match="valid JSON") as captured:
+        UrllibJsonTransport().post(
+            "https://example.test/v1/chat/completions",
+            headers={"Authorization": "Bearer parse-key-sensitive"},
+            payload={"model": "test-model"},
+            timeout_seconds=30.0,
+        )
+
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_openai_adapter_rejects_excessive_json_nesting() -> None:
+    nested: Any = "leaf"
+    for _ in range(65):
+        nested = {"nested": nested}
+    adapter = adapter_with(
+        SequenceTransport(
+            [{"choices": [{"message": {"content": "done"}}], "nested": nested}]
+        )
+    )
+
+    with pytest.raises(OpenAIProtocolError, match="nesting"):
+        adapter.complete(sample_request())
+
+
 def test_fake_transport_stays_offline_and_receives_key_only_in_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("fake transport must not access the network")
 
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", forbidden)
     monkeypatch.setattr("urllib.request.urlopen", forbidden)
     transport = SequenceTransport([answer_payload()])
     response = adapter_with(transport).complete(sample_request())
