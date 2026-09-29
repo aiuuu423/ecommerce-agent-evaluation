@@ -41,8 +41,9 @@ offline smoke；Real LLM 与 V1/V2 实验仍为 `Pending / Not Run`。
 - [x] 以不可变目录原子发布并提交 Case JSONL 与 Manifest。
 - [x] 建立只读数据探索 Notebook，并隔离 Public Validation 查询句柄。
 - [x] 建立统一 Phase 1 CLI 与可覆盖输出根目录的 Makefile 入口。
-- [x] 仅公开 `build-phase1 = app.data.phase1:main` console script，并验证三个 Makefile
-  目标继续委托统一 CLI。
+- [x] Phase 1 当时仅公开 `build-phase1 = app.data.phase1:main` console script，并验证
+  三个 Makefile 目标继续委托统一 CLI；Phase 2 新增
+  `phase2-smoke = app.experiments.phase2_smoke:main`。
 - [x] 使用锁定版本的 `filelock` 支持 Linux、macOS 与 Windows 并发发布。
 - [x] 使用非 `v1` 配置端到端验证动态输出目录。
 - [x] 验证干净重建的 16 个产物文件与冻结版本逐字节一致。

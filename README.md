@@ -59,9 +59,10 @@ make PYTHON=python3.12 PHASE2_SMOKE_DIR=/tmp/phase2-smoke phase2-smoke
 offline smoke 仅验证
 `Deterministic adapter → Runner → Registry → query_sales → calculate_metrics → final answer`
 链路；它不读取 Evaluation Cases、不评分、不生成 Phase 3 run artifact，也不代表 V1/V2
-实验结果。真实模型仅在显式配置 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 后可由
-`OpenAICompatibleAdapter` 使用；该路径目前只通过 fake/mock transport 测试，未选择或调用
-真实 provider/model。offline smoke 不读取这些变量，也不访问网络。
+实验结果。调用方必须在构造 `OpenAICompatibleAdapter` 时显式传入 `base_url`、`api_key`
+和 `model`；当前没有从 `.env` 或环境变量读取这些参数并发起真实运行的 CLI、Makefile 或
+应用入口。该路径目前只通过 fake/mock transport 测试，未选择或调用真实 provider/model；
+offline smoke 不读取 `.env` 或相关环境变量，也不访问网络。
 
 ## 数据真实性
 
