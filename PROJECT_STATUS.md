@@ -96,6 +96,8 @@ offline smoke；Real LLM 与 V1/V2 实验仍为 `Pending / Not Run`。
   provider/model，Real LLM 为 `Pending / Not Run`。
 - 尚未实现或运行 Baseline V1、Optimized V2、A/B Evaluation；offline smoke 不读取
   Evaluation Cases、不评分、不生成 Phase 3 run artifact。
+- Task 12 的中间提交历史曾提前加入、修正并撤回 README 内容；最终文件边界正确，但因未获
+  破坏性历史改写授权，该提交历史噪声被保留，不影响运行结果。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
 - Phase 7 实施前仍须冻结簇级二元汇总或适合聚类数据的配对方法、Cluster Bootstrap
   细节、有效样本量口径与退化情形处理；不得在 100 个 Case 对上直接运行假设相互独立的
@@ -141,8 +143,8 @@ offline smoke；Real LLM 与 V1/V2 实验仍为 `Pending / Not Run`。
   `0 error(s)`。
 - `git diff --check`：PASS。
 - Phase 1 冻结资产门禁：`3 passed in 5.57s`。
-- Phase 2 定向测试：`152 passed in 13.35s`。
-- 全量测试：`512 passed, 2 warnings in 153.23s`；两条 warning 均为只读用户目录触发的
+- Phase 2 定向测试：`176 passed in 18.13s`。
+- 全量测试：`533 passed, 2 warnings in 157.22s`；两条 warning 均为只读用户目录触发的
   IPython 临时目录提示。
 - Ruff：`All checks passed!`。
 - Registry：恰好 `5` 个工具，顺序为 `calculate_metrics`、`query_marketing`、
