@@ -61,22 +61,25 @@ class RunLevelError(RuntimeError):
 
 
 def catalog_as_of_date(catalog: Catalog) -> date:
-    row = catalog.execute(
-        """
-        select
-            (select max(order_date) from orders),
-            (select max(date) from traffic),
-            (select max(date) from marketing)
-        """
-    ).fetchone()
+    try:
+        result = catalog.execute(
+            """
+            select
+                (select max(order_date) from orders),
+                (select max(date) from traffic),
+                (select max(date) from marketing)
+            """
+        )
+        row = result.fetchone()
+    except Exception as exc:
+        raise RunLevelError("dataset_date_query_error") from exc
     if row is None or len(row) != 3 or any(value is None for value in row):
         raise RunLevelError("dataset_date_unavailable")
+    if any(type(value) is not date for value in row):
+        raise RunLevelError("dataset_date_invalid")
     if len(set(row)) != 1:
         raise RunLevelError("dataset_date_mismatch")
-    value = row[0]
-    if not isinstance(value, date):
-        raise RunLevelError("dataset_date_invalid")
-    return value
+    return row[0]
 
 
 def policy_source_identity() -> tuple[str, tuple[str, ...]]:
@@ -211,6 +214,11 @@ class BaselineBatchRunner:
         output_root: Path,
     ) -> Path:
         expected_by_split = cases.manifest.datasets
+        if (
+            expected_by_split["development"].dataset_id
+            == expected_by_split["public_validation"].dataset_id
+        ):
+            raise RunLevelError("dataset_split_id_collision")
         expected_ids = {
             expected_by_split["development"].dataset_id,
             expected_by_split["public_validation"].dataset_id,
@@ -235,23 +243,25 @@ class BaselineBatchRunner:
 
         with ExitStack() as stack:
             catalogs: dict[str, Catalog] = {}
-            for dataset_id, dataset_dir in dataset_dirs.items():
+            for split in ("development", "public_validation"):
+                expected = expected_by_split[split]
+                dataset_dir = dataset_dirs[expected.dataset_id]
                 try:
                     catalog = stack.enter_context(open_dataset(dataset_dir))
                 except Exception as exc:
                     raise RunLevelError("catalog_open_error") from exc
                 summary = catalog.verified_summary
                 if (
-                    summary["dataset_id"] != dataset_id
-                    or summary["dataset_version"]
-                    != next(
-                        identity.dataset_version
-                        for identity in expected_by_split.values()
-                        if identity.dataset_id == dataset_id
-                    )
+                    summary["dataset_id"] != expected.dataset_id
+                    or summary["dataset_version"] != expected.dataset_version
+                    or catalog.manifest.get("dataset_id") != expected.dataset_id
+                    or catalog.manifest.get("dataset_version")
+                    != expected.dataset_version
+                    or catalog.manifest.get("config_sha256")
+                    != expected.generator_config_hash
                 ):
                     raise RunLevelError("dataset_identity_mismatch")
-                catalogs[dataset_id] = catalog
+                catalogs[expected.dataset_id] = catalog
 
             try:
                 initial_dataset_identity = dataset_source_identity(dataset_dirs)
@@ -374,9 +384,7 @@ class BaselineBatchRunner:
             runtime_versions=_runtime_versions(),
             case_set_id=cases.manifest.case_set_id,
             case_jsonl_sha256=cases.manifest.jsonl_sha256,
-            case_manifest_sha256=sha256(
-                canonical_json_bytes(cases.manifest)
-            ).hexdigest(),
+            case_manifest_sha256=cases.manifest_sha256,
             datasets=dataset_artifacts,
             tool_contract_version=cases.manifest.tool_contract.version,
             tool_contract_sha256=cases.manifest.tool_contract.sha256,

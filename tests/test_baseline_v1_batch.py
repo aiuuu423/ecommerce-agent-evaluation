@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
@@ -108,6 +109,7 @@ def _case_bundle(dataset_dirs: dict[str, Path]) -> CaseBundle:
             tool_contract={"version": "1.0", "sha256": SHA},
         ),
         cases=cases,
+        manifest_sha256=SHA,
     )
 
 
@@ -191,6 +193,7 @@ def test_batch_routes_two_catalogs_in_order_with_fresh_runtime_per_case(
     assert len(verified.manifest.git_commit) == 40
     assert verified.manifest.runtime_versions.python
     assert verified.manifest.policy_snapshot_sha256
+    assert verified.manifest.case_manifest_sha256 == bundle.manifest_sha256
     assert [item.dataset_id for item in verified.manifest.datasets] == [
         bundle.manifest.datasets["development"].dataset_id,
         bundle.manifest.datasets["public_validation"].dataset_id,
@@ -278,6 +281,171 @@ def test_catalog_as_of_date_uses_fact_table_maxima_and_requires_equality(
             with pytest.raises(RunLevelError) as exc_info:
                 catalog_as_of_date(catalog)
     assert exc_info.value.code == "dataset_date_mismatch"
+
+
+class _AsOfCatalog:
+    def __init__(
+        self,
+        row: object = (date(2026, 4, 30),) * 3,
+        *,
+        execute_error: Exception | None = None,
+        fetch_error: Exception | None = None,
+    ) -> None:
+        self.row = row
+        self.execute_error = execute_error
+        self.fetch_error = fetch_error
+
+    def execute(self, query: str) -> "_AsOfCatalog":
+        if self.execute_error is not None:
+            raise self.execute_error
+        return self
+
+    def fetchone(self) -> object:
+        if self.fetch_error is not None:
+            raise self.fetch_error
+        return self.row
+
+
+@pytest.mark.parametrize(
+    ("catalog", "expected_code"),
+    [
+        (_AsOfCatalog(execute_error=RuntimeError("secret execute failure")),
+         "dataset_date_query_error"),
+        (_AsOfCatalog(fetch_error=RuntimeError("secret fetch failure")),
+         "dataset_date_query_error"),
+        (_AsOfCatalog(None), "dataset_date_unavailable"),
+        (_AsOfCatalog(()), "dataset_date_unavailable"),
+        (_AsOfCatalog(("2026-04-30",) * 3), "dataset_date_invalid"),
+        (
+            _AsOfCatalog(
+                (date(2026, 4, 30), date(2026, 4, 29), date(2026, 4, 30))
+            ),
+            "dataset_date_mismatch",
+        ),
+    ],
+)
+def test_catalog_as_of_date_normalizes_all_invalid_results(
+    catalog: _AsOfCatalog,
+    expected_code: str,
+) -> None:
+    with pytest.raises(RunLevelError) as exc_info:
+        catalog_as_of_date(catalog)  # type: ignore[arg-type]
+
+    assert exc_info.value.code == expected_code
+    assert str(exc_info.value) == expected_code
+
+
+@pytest.mark.parametrize(
+    ("split", "field", "replacement"),
+    [
+        ("development", "dataset_id", "0" * 16),
+        ("development", "dataset_version", "wrong"),
+        ("development", "config_sha256", "0" * 64),
+        ("public_validation", "dataset_id", "0" * 16),
+        ("public_validation", "dataset_version", "wrong"),
+        ("public_validation", "config_sha256", "0" * 64),
+    ],
+)
+def test_batch_rejects_each_split_dataset_manifest_mismatch_without_publishing(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    split: str,
+    field: str,
+    replacement: str,
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    mapping = _dataset_mapping(bundle, dataset_dirs)
+    target_path = dataset_dirs[split]
+
+    @contextmanager
+    def open_with_tampered_manifest(path: Path):
+        with open_dataset(path) as catalog:
+            if path == target_path:
+                payload = dict(catalog.manifest)
+                payload[field] = replacement
+                object.__setattr__(catalog, "_Catalog__manifest", payload)
+            yield catalog
+
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.open_dataset",
+        open_with_tampered_manifest,
+    )
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner().run(bundle, mapping, tmp_path / "outputs")
+
+    assert exc_info.value.code == "dataset_identity_mismatch"
+    publish.assert_not_called()
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_batch_explicitly_rejects_same_dataset_id_for_both_splits(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+) -> None:
+    original = _case_bundle(dataset_dirs)
+    manifest_payload = original.manifest.model_dump(mode="json")
+    development = manifest_payload["datasets"]["development"]
+    manifest_payload["datasets"]["public_validation"] = development
+    cases_payload = [case.model_dump(mode="json") for case in original.cases]
+    for case in cases_payload:
+        if case["split"] == "public_validation":
+            case["dataset_id"] = development["dataset_id"]
+            case["dataset_version"] = development["dataset_version"]
+    bundle = CaseBundle(
+        manifest=EvaluationCaseManifest.model_validate(
+            manifest_payload,
+            strict=True,
+        ),
+        cases=tuple(
+            RunnableCase.model_validate(case, strict=True) for case in cases_payload
+        ),
+        manifest_sha256=original.manifest_sha256,
+    )
+    mapping = {development["dataset_id"]: dataset_dirs["development"]}
+
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner().run(bundle, mapping, tmp_path / "outputs")
+
+    assert exc_info.value.code == "dataset_split_id_collision"
+    publish.assert_not_called()
+    assert not (tmp_path / "outputs").exists()
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        "dataset_date_query_error",
+        "dataset_date_unavailable",
+        "dataset_date_invalid",
+        "dataset_date_mismatch",
+    ],
+)
+def test_as_of_run_level_errors_never_publish(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: str,
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.catalog_as_of_date",
+        mock.Mock(side_effect=RunLevelError(error_code)),
+    )
+
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner().run(
+                bundle,
+                _dataset_mapping(bundle, dataset_dirs),
+                tmp_path / "outputs",
+            )
+
+    assert exc_info.value.code == error_code
+    publish.assert_not_called()
+    assert not (tmp_path / "outputs").exists()
 
 
 @pytest.mark.parametrize(

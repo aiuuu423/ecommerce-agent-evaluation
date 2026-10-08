@@ -197,6 +197,7 @@ class RunnableCase(CaseModel):
 class CaseBundle(CaseModel):
     manifest: EvaluationCaseManifest
     cases: tuple[RunnableCase, ...]
+    manifest_sha256: Sha256Hex
 
     @model_validator(mode="after")
     def validate_bundle(self) -> "CaseBundle":
@@ -297,4 +298,8 @@ def load_runnable_cases(case_dir: Path) -> CaseBundle:
     if manifest_id({"lines": canonical_lines}) != manifest.case_set_id:
         raise ValueError("case set ID does not match manifest")
 
-    return CaseBundle(manifest=manifest, cases=tuple(runnable_cases))
+    return CaseBundle(
+        manifest=manifest,
+        cases=tuple(runnable_cases),
+        manifest_sha256=sha256(manifest_contents).hexdigest(),
+    )

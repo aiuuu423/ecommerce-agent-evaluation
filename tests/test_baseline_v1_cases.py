@@ -101,9 +101,11 @@ def test_load_runnable_cases_validates_identity_and_projects_only_safe_fields(
     two_source_cases: list[dict[str, object]],
 ) -> None:
     case_dir = _write_case_dir(tmp_path / "cases", two_source_cases)
+    manifest_contents = (case_dir / "manifest.json").read_bytes()
 
     bundle = load_runnable_cases(case_dir)
 
+    assert bundle.manifest_sha256 == hashlib.sha256(manifest_contents).hexdigest()
     assert [case.case_id for case in bundle.cases] == [
         case["case_id"] for case in two_source_cases
     ]
@@ -127,6 +129,8 @@ def test_load_runnable_cases_validates_identity_and_projects_only_safe_fields(
     ).lower()
     with pytest.raises(ValidationError, match="frozen"):
         bundle.cases[0].user_input = "tampered"
+    with pytest.raises(ValidationError, match="frozen"):
+        bundle.manifest_sha256 = "0" * 64
 
 
 def test_case_bundle_deeply_freezes_manifest_mappings_and_serializes_canonically(
