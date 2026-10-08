@@ -114,10 +114,13 @@ class DateWindows(BaseModel):
 
 class ParsedRequest(BaseModel):
     task: TaskKind
-    product_ids: list[str]
+    product_ids: tuple[ProductId, ...]
     windows: DateWindows
     unsupported_reason: str | None = None
 ```
+
+`ParsedRequest.product_ids` 使用 `ProductId` tuple 保持深层不可变；解析层始终返回 tuple，
+仅在组装现有工具 Schema 的参数边界时转换为 list。
 
 `app/experiments/cases.py` 的执行边界固定为：
 
@@ -222,7 +225,7 @@ context = PolicyContext(
 )
 parsed = parse_request("分析最近30天 P003 的转化下降", context)
 assert parsed.task == TaskKind.CONVERSION_DECLINE
-assert parsed.product_ids == ["P003"]
+assert parsed.product_ids == ("P003",)
 assert parsed.windows.model_dump(mode="json") == {
     "start_date": "2026-04-01",
     "end_date": "2026-04-30",
@@ -245,11 +248,11 @@ Expected: FAIL，原因是 `parse_request` 尚不存在。
 
 实现：
 
-- `_extract_product_ids(text) -> list[str]`，只接受 `P[0-9]{3}`。
+- `_extract_product_ids(text) -> tuple[ProductId, ...]`，只接受 `P[0-9]{3}`，去重后保持首次出现顺序。
 - `_default_windows(as_of_date, days=30) -> DateWindows`。
 - `_extract_windows(text, as_of_date) -> DateWindows`，只支持设计文档列出的表达。
 - `_classify_task(text) -> TaskKind`，严格按冻结优先级。
-- `parse_request(text, context) -> ParsedRequest`。
+- `parse_request(text, context) -> ParsedRequest`，其中 `product_ids` 保持 tuple，不在解析层转回 list。
 
 不读取文件、环境变量、Case 元数据或数据库；不导入 `app.data.gold`。
 

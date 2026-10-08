@@ -94,8 +94,9 @@ cases.jsonl
 - 通用业务信号，如 GMV/营收、商品异常、转化、关注商品、下周重点。
 
 若未给日期，使用当前数据集 Manifest 的 `as_of_date` 形成最近 30 天和此前 30 天。
-若未给商品，使用空 `product_ids` 表示全商品。超出数据边界、窗口逆序或冲突表达返回结构化
-`unsupported`，不自动修复。
+`_extract_product_ids` 返回 `tuple[ProductId, ...]`，`ParsedRequest.product_ids` 也保持该
+tuple 契约，以确保策略状态深层不可变。若未给商品，使用空 tuple 表示全商品。超出数据边界、
+窗口逆序或冲突表达返回结构化 `unsupported`，不自动修复。
 
 ### `app/baselines/v1/policy.py`
 
@@ -185,6 +186,9 @@ product_ids
 `query_sales` 固定 `include_refunds=true`，`query_traffic` 固定
 `include_missing=true`。`query_product` 只在解析出至少一个商品 ID 时调用；商品异常任务未指定
 商品时跳过该工具并对全商品执行其余路径。
+
+策略和解析层始终保留 `product_ids: tuple[ProductId, ...]`；仅在构造现有工具 Schema 的
+`product_ids` 参数时执行 `list(parsed.product_ids)`，不把可变 list 写回策略状态。
 
 指标集合按主任务冻结：
 
