@@ -31,8 +31,11 @@ WINDOWS = DateWindows(
 )
 
 
-def parsed(task: TaskKind) -> ParsedRequest:
-    return ParsedRequest(task=task, product_ids=(), windows=WINDOWS)
+def parsed(
+    task: TaskKind,
+    product_ids: tuple[str, ...] = (),
+) -> ParsedRequest:
+    return ParsedRequest(task=task, product_ids=product_ids, windows=WINDOWS)
 
 
 def execution(result: object, number: int = 1) -> PriorToolExecution:
@@ -107,6 +110,8 @@ def metrics_execution(
             "current_refund_rate",
         ],
     }[task]
+    if rows and "product_id" in rows[0] and "product_id" not in metric_columns:
+        metric_columns.insert(0, "product_id")
     result = CalculateMetricsResult(
         result_id="result_0001",
         tool_name="calculate_metrics",
@@ -163,6 +168,27 @@ def product_row(product_id: str, value: float) -> dict[str, object]:
         "current_cvr": 0.2,
         "previous_cvr": 0.2,
         "cvr_change": 0.0,
+    }
+
+
+def conversion_row(
+    product_id: str,
+    cvr_change: float | None,
+    *,
+    current_visits: int | None = 900,
+) -> dict[str, object]:
+    return {
+        "product_id": product_id,
+        "current_visits": current_visits,
+        "previous_visits": 1000,
+        "current_orders": 90,
+        "previous_orders": 120,
+        "current_cvr": 0.1,
+        "previous_cvr": 0.12,
+        "cvr_change": cvr_change,
+        "cvr_change_rate": -0.1667,
+        "current_observed_days": 30,
+        "previous_observed_days": 30,
     }
 
 
@@ -309,6 +335,92 @@ def test_product_answers_use_frozen_sort_and_top_five() -> None:
     product_ids = ("P001", "P004", "P005", "P002", "P003")
     positions = [answer.index(product_id) for product_id in product_ids]
     assert positions == sorted(positions)
+
+
+def test_grouped_conversion_uses_frozen_sort_and_top_five() -> None:
+    rows = [
+        conversion_row(product_id, value)
+        for product_id, value in (
+            ("P006", -0.01),
+            ("P005", -0.04),
+            ("P004", -0.04),
+            ("P003", -0.02),
+            ("P002", -0.03),
+            ("P001", -0.05),
+        )
+    ]
+
+    answer = render_final_answer(
+        parsed(TaskKind.CONVERSION_DECLINE, ("P001", "P002")),
+        [metrics_execution(TaskKind.CONVERSION_DECLINE, rows)],
+    )
+
+    assert "P006" not in answer
+    product_ids = ("P001", "P004", "P005", "P002", "P003")
+    positions = [answer.index(product_id) for product_id in product_ids]
+    assert positions == sorted(positions)
+
+
+def test_ungrouped_conversion_only_renders_the_single_overall_row() -> None:
+    answer = render_final_answer(
+        parsed(TaskKind.CONVERSION_DECLINE),
+        [
+            metrics_execution(
+                TaskKind.CONVERSION_DECLINE,
+                [
+                    {
+                        key: value
+                        for key, value in conversion_row("P001", -0.02).items()
+                        if key != "product_id"
+                    },
+                    {
+                        key: value
+                        for key, value in conversion_row("P002", -0.03).items()
+                        if key != "product_id"
+                    },
+                ],
+            )
+        ],
+    )
+
+    assert answer.count("当前转化率") == 1
+
+
+def test_none_outside_selected_top_five_does_not_limit_answer() -> None:
+    rows = [
+        conversion_row(f"P{index:03d}", -0.01 * index)
+        for index in range(1, 6)
+    ]
+    rows.insert(0, conversion_row("P999", None, current_visits=None))
+
+    answer = render_final_answer(
+        parsed(TaskKind.CONVERSION_DECLINE, ("P001",)),
+        [metrics_execution(TaskKind.CONVERSION_DECLINE, rows)],
+    )
+
+    assert "P999" not in answer
+    assert "结论：" in answer
+    assert "限制：" not in answer
+
+
+def test_none_inside_selected_top_five_uses_limitation_before_any_claim() -> None:
+    rows = [
+        conversion_row("P001", -0.05, current_visits=None),
+        conversion_row("P002", -0.04),
+        conversion_row("P003", -0.03),
+        conversion_row("P004", -0.02),
+        conversion_row("P005", -0.01),
+        conversion_row("P006", 0.0),
+    ]
+
+    answer = render_final_answer(
+        parsed(TaskKind.CONVERSION_DECLINE, ("P001",)),
+        [metrics_execution(TaskKind.CONVERSION_DECLINE, rows)],
+    )
+
+    assert "P001" in answer
+    assert "限制：" in answer
+    assert "结论：" not in answer
 
 
 @pytest.mark.parametrize("mode", ["none", "empty", "warnings"])

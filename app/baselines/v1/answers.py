@@ -95,8 +95,13 @@ def _contains_missing_value(
     result: CalculateMetricsResult,
     rows: Sequence[CalculateMetricsRow],
 ) -> bool:
-    metric_columns = [column for column in result.columns if column != "product_id"]
-    return any(getattr(row, column) is None for row in rows for column in metric_columns)
+    return any(getattr(row, column) is None for row in rows for column in result.columns)
+
+
+def _answer_heading(conclusion: str, has_missing_value: bool) -> str:
+    if has_missing_value:
+        return "限制：实际输出行存在数据不足；以下仅展示工具返回值，不形成肯定判断。"
+    return conclusion
 
 
 def _format_row(
@@ -121,9 +126,16 @@ def _rate(value: object) -> str:
     return format_rate(value)  # type: ignore[arg-type]
 
 
-def _render_gmv(row: CalculateMetricsRow) -> list[str]:
+def _render_gmv(
+    row: CalculateMetricsRow,
+    *,
+    has_missing_value: bool,
+) -> list[str]:
     return [
-        "结论：当前 GMV、订单量与客单价相对对照期的变化如下。",
+        _answer_heading(
+            "结论：当前 GMV、订单量与客单价相对对照期的变化如下。",
+            has_missing_value,
+        ),
         "- "
         + _format_row(
             row,
@@ -153,38 +165,47 @@ def _render_gmv(row: CalculateMetricsRow) -> list[str]:
     ]
 
 
-def _render_conversion(row: CalculateMetricsRow) -> list[str]:
-    return [
-        "结论：转化、访问与订单的同期变化如下，不据此作因果判断。",
-        "- "
-        + _format_row(
-            row,
-            (
-                ("current_cvr", "当前转化率", _rate),
-                ("previous_cvr", "对照转化率", _rate),
-                ("cvr_change", "转化率变化", _rate),
-                ("cvr_change_rate", "转化率相对变化", _rate),
-            ),
-        ),
-        "- "
-        + _format_row(
-            row,
-            (
-                ("current_visits", "当前访问", _count),
-                ("previous_visits", "对照访问", _count),
-                ("current_orders", "当前订单", _count),
-                ("previous_orders", "对照订单", _count),
-            ),
-        ),
-        "- "
-        + _format_row(
-            row,
-            (
-                ("current_observed_days", "当前观测天数", _count),
-                ("previous_observed_days", "对照观测天数", _count),
-            ),
-        ),
+_CONVERSION_FIELDS: tuple[tuple[str, str, Callable[[object], str]], ...] = (
+    ("current_cvr", "当前转化率", _rate),
+    ("previous_cvr", "对照转化率", _rate),
+    ("cvr_change", "转化率变化", _rate),
+    ("cvr_change_rate", "转化率相对变化", _rate),
+    ("current_visits", "当前访问", _count),
+    ("previous_visits", "对照访问", _count),
+    ("current_orders", "当前订单", _count),
+    ("previous_orders", "对照订单", _count),
+    ("current_observed_days", "当前观测天数", _count),
+    ("previous_observed_days", "对照观测天数", _count),
+)
+
+
+def _render_conversion(
+    rows: Sequence[CalculateMetricsRow],
+    *,
+    grouped: bool,
+    has_missing_value: bool,
+) -> list[str]:
+    lines = [
+        _answer_heading(
+            "结论：转化、访问与订单的同期变化如下，不据此作因果判断。",
+            has_missing_value,
+        )
     ]
+    if grouped:
+        for row in rows:
+            label = row.product_id if row.product_id is not None else _INSUFFICIENT
+            lines.append(f"- {label}：{_format_row(row, _CONVERSION_FIELDS)}")
+        return lines
+
+    row = rows[0]
+    lines.extend(
+        [
+            "- " + _format_row(row, _CONVERSION_FIELDS[:4]),
+            "- " + _format_row(row, _CONVERSION_FIELDS[4:8]),
+            "- " + _format_row(row, _CONVERSION_FIELDS[8:]),
+        ]
+    )
+    return lines
 
 
 _PRODUCT_FIELDS: dict[
@@ -260,21 +281,18 @@ def _product_names(results: dict[str, AnyToolResult]) -> dict[str, str]:
 
 def _render_products(
     task: TaskKind,
-    result: CalculateMetricsResult,
+    rows: Sequence[CalculateMetricsRow],
     results: dict[str, AnyToolResult],
+    *,
+    has_missing_value: bool,
 ) -> list[str]:
-    rows = sorted(
-        result.rows,
-        key=cmp_to_key(
-            lambda left, right: _compare_rows(
-                left,
-                right,
-                STABLE_SORT_FIELDS[task],
-            )
-        ),
-    )[:DEFAULT_TOP_K]
     names = _product_names(results)
-    lines = [_PRODUCT_CONCLUSIONS[task]]
+    lines = [
+        _answer_heading(
+            _PRODUCT_CONCLUSIONS[task],
+            has_missing_value,
+        )
+    ]
     for row in rows:
         product_id = row.product_id
         if product_id is None:
@@ -285,6 +303,37 @@ def _render_products(
             label = product_id
         lines.append(f"- {label}：{_format_row(row, _PRODUCT_FIELDS[task])}")
     return lines
+
+
+def _sorted_top_rows(
+    task: TaskKind,
+    rows: Sequence[CalculateMetricsRow],
+) -> tuple[CalculateMetricsRow, ...]:
+    return tuple(
+        sorted(
+            rows,
+            key=cmp_to_key(
+                lambda left, right: _compare_rows(
+                    left,
+                    right,
+                    STABLE_SORT_FIELDS[task],
+                )
+            ),
+        )[:DEFAULT_TOP_K]
+    )
+
+
+def _select_output_rows(
+    parsed: ParsedRequest,
+    result: CalculateMetricsResult,
+) -> tuple[CalculateMetricsRow, ...]:
+    is_grouped_conversion = (
+        parsed.task is TaskKind.CONVERSION_DECLINE
+        and "product_id" in result.columns
+    )
+    if parsed.task in _PRODUCT_FIELDS or is_grouped_conversion:
+        return _sorted_top_rows(parsed.task, result.rows)
+    return tuple(result.rows[:1])
 
 
 def render_final_answer(
@@ -301,16 +350,24 @@ def render_final_answer(
     if not metrics.rows:
         return _insufficient_answer(results, "指标结果为空")
 
-    rows = metrics.rows
+    rows = _select_output_rows(parsed, metrics)
+    has_missing_value = _contains_missing_value(metrics, rows)
     if parsed.task is TaskKind.GMV_DIAGNOSIS:
-        lines = _render_gmv(rows[0])
+        lines = _render_gmv(rows[0], has_missing_value=has_missing_value)
     elif parsed.task is TaskKind.CONVERSION_DECLINE:
-        lines = _render_conversion(rows[0])
+        lines = _render_conversion(
+            rows,
+            grouped="product_id" in metrics.columns,
+            has_missing_value=has_missing_value,
+        )
     elif parsed.task in _PRODUCT_FIELDS:
-        lines = _render_products(parsed.task, metrics, results)
+        lines = _render_products(
+            parsed.task,
+            rows,
+            results,
+            has_missing_value=has_missing_value,
+        )
     else:
         return _insufficient_answer(results, "任务类型不受支持")
 
-    if _contains_missing_value(metrics, rows[:DEFAULT_TOP_K]):
-        lines.append("限制：部分指标数据不足，无法计算对应值。")
     return "\n".join([_source_line(results), *lines])
