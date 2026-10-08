@@ -4,6 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.baselines.v1 import (
+    BaselinePolicyProtocolError,
+    BaselinePolicyV1,
     DateWindows,
     ExecutionPlan,
     ParsedRequest,
@@ -20,9 +22,66 @@ from app.baselines.v1.config import (
     ROUTING_KEYWORDS,
     TOOL_PATHS,
 )
+from app.llm import AdapterRequest
 from app.tools.metrics import METRIC_REQUIREMENTS
 from app.tools.registry import build_default_registry
-from app.tools.schemas import MetricName
+from app.tools.schemas import (
+    PRODUCT_COLUMNS,
+    SALES_COLUMNS,
+    TRAFFIC_COLUMNS,
+    CalculateMetricsResult,
+    MetricName,
+    PriorToolExecution,
+    QueryProductResult,
+    QuerySalesResult,
+    QueryTrafficResult,
+)
+
+CONTEXT = PolicyContext(
+    dataset_id="e1e81533c25e03e5",
+    dataset_version="v1",
+    as_of_date=date(2026, 4, 30),
+)
+TOOLS = [{"type": "function", "function": {"name": "query_marketing"}}]
+
+
+def request(
+    user_input: str,
+    prior: list[PriorToolExecution] | None = None,
+) -> AdapterRequest:
+    return AdapterRequest(
+        user_input=user_input,
+        tools=TOOLS,
+        prior_tool_executions=prior or [],
+    )
+
+
+def empty_execution(action: object, result_number: int) -> PriorToolExecution:
+    call = action.tool_calls[0]  # type: ignore[attr-defined]
+    common = {
+        "result_id": f"result_{result_number:04d}",
+        "tool_name": call.name,
+        "dataset_id": CONTEXT.dataset_id,
+        "source_label": "Synthetic E-commerce Data",
+        "rows": [],
+        "row_count": 0,
+    }
+    if call.name == "query_product":
+        result = QueryProductResult(columns=PRODUCT_COLUMNS, **common)
+    elif call.name == "query_sales":
+        result = QuerySalesResult(columns=SALES_COLUMNS, **common)
+    elif call.name == "query_traffic":
+        result = QueryTrafficResult(columns=TRAFFIC_COLUMNS, **common)
+    else:
+        result = CalculateMetricsResult(
+            columns=[*call.arguments["group_by"], *call.arguments["metrics"]],
+            **common,
+        )
+    return PriorToolExecution(
+        call_id=call.call_id,
+        arguments=call.arguments,
+        result=result,
+    )
 
 
 def test_policy_snapshot_freezes_v1_contract_without_evaluation_leakage() -> None:
@@ -258,3 +317,169 @@ def test_policy_tools_exist_and_metric_dependencies_are_in_each_tool_path() -> N
             for tool_name in METRIC_REQUIREMENTS[metric.value]
         }
         assert required_tools <= set(tool_path)
+
+
+@pytest.mark.parametrize(
+    ("user_input", "first_tool"),
+    [
+        ("诊断最近30天 GMV 变化", "query_sales"),
+        ("分析最近30天 P003 商品异常", "query_product"),
+        ("分析最近30天商品异常", "query_sales"),
+        ("分析最近30天转化下降", "query_traffic"),
+        ("列出最近30天需要关注的商品", "query_sales"),
+        ("给出最近30天下周重点动作", "query_sales"),
+    ],
+)
+def test_policy_selects_the_frozen_first_action(
+    user_input: str,
+    first_tool: str,
+) -> None:
+    action = BaselinePolicyV1(CONTEXT)(request(user_input))
+
+    assert action.tool_calls[0].name == first_tool
+
+
+@pytest.mark.parametrize(
+    ("user_input", "expected_path"),
+    [
+        ("诊断最近30天 GMV 变化", ("query_sales", "calculate_metrics")),
+        (
+            "分析最近30天 P003 商品异常",
+            ("query_product", "query_sales", "query_traffic", "calculate_metrics"),
+        ),
+        (
+            "分析最近30天商品异常",
+            ("query_sales", "query_traffic", "calculate_metrics"),
+        ),
+        (
+            "分析最近30天转化下降",
+            ("query_traffic", "query_sales", "calculate_metrics"),
+        ),
+        (
+            "列出最近30天需要关注的商品",
+            ("query_sales", "query_traffic", "calculate_metrics"),
+        ),
+        (
+            "给出最近30天下周重点动作",
+            ("query_sales", "query_traffic", "calculate_metrics"),
+        ),
+    ],
+)
+def test_policy_runs_complete_fixed_paths_with_stable_unique_call_ids(
+    user_input: str,
+    expected_path: tuple[str, ...],
+) -> None:
+    policy = BaselinePolicyV1(CONTEXT)
+    prior: list[PriorToolExecution] = []
+    names: list[str] = []
+    call_ids: list[str] = []
+
+    for index, expected_name in enumerate(expected_path, start=1):
+        action = policy(request(user_input, prior))
+        repeated = policy(request(user_input, prior))
+        assert action == repeated
+        call = action.tool_calls[0]
+        assert call.name == expected_name
+        names.append(call.name)
+        call_ids.append(call.call_id)
+        prior.append(empty_execution(action, index))
+
+    final = policy(request(user_input, prior))
+    assert final.tool_calls == []
+    assert final.final_answer
+    assert names == list(expected_path)
+    assert len(call_ids) == len(set(call_ids))
+
+
+def test_policy_builds_exact_window_query_arguments() -> None:
+    expected_window = {
+        "start_date": "2026-04-01",
+        "end_date": "2026-04-30",
+        "comparison_start_date": "2026-03-02",
+        "comparison_end_date": "2026-03-31",
+        "product_ids": ["P003"],
+    }
+
+    sales = BaselinePolicyV1(CONTEXT)(request("诊断最近30天 P003 GMV 变化"))
+    traffic = BaselinePolicyV1(CONTEXT)(request("分析最近30天 P003 转化下降"))
+
+    assert sales.tool_calls[0].arguments == {
+        **expected_window,
+        "include_refunds": True,
+    }
+    assert traffic.tool_calls[0].arguments == {
+        **expected_window,
+        "include_missing": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("user_input", "task", "group_by"),
+    [
+        ("诊断 GMV 变化", TaskKind.GMV_DIAGNOSIS, []),
+        ("分析 P003 商品异常", TaskKind.PRODUCT_ANOMALY, ["product_id"]),
+        ("分析转化下降", TaskKind.CONVERSION_DECLINE, []),
+        ("分析 P003 转化下降", TaskKind.CONVERSION_DECLINE, ["product_id"]),
+        ("列出需要关注的商品", TaskKind.PRODUCTS_TO_WATCH, ["product_id"]),
+        ("给出下周重点动作", TaskKind.NEXT_WEEK_PRIORITY, ["product_id"]),
+    ],
+)
+def test_policy_uses_frozen_metrics_and_grouping(
+    user_input: str,
+    task: TaskKind,
+    group_by: list[str],
+) -> None:
+    policy = BaselinePolicyV1(CONTEXT)
+    prior: list[PriorToolExecution] = []
+
+    while True:
+        action = policy(request(user_input, prior))
+        call = action.tool_calls[0]
+        if call.name == "calculate_metrics":
+            assert call.arguments == {
+                "metrics": [metric.value for metric in METRICS[task]],
+                "group_by": group_by,
+            }
+            return
+        prior.append(empty_execution(action, len(prior) + 1))
+
+
+def test_policy_returns_unsupported_answer_without_tools() -> None:
+    action = BaselinePolicyV1(CONTEXT)(request("请介绍你的能力"))
+
+    assert action.tool_calls == []
+    assert action.final_answer == "当前仅支持商品经营、转化、关注清单、下周重点和 GMV 诊断。"
+
+
+def test_policy_rejects_unexpected_prior_tool_sequence() -> None:
+    wrong_first = BaselinePolicyV1(CONTEXT)(request("分析转化下降"))
+    wrong_first = wrong_first.model_copy(
+        update={
+            "tool_calls": [
+                wrong_first.tool_calls[0].model_copy(
+                    update={"name": "query_sales"}
+                )
+            ]
+        }
+    )
+    prior = [empty_execution(wrong_first, 1)]
+
+    with pytest.raises(
+        BaselinePolicyProtocolError,
+        match="^unexpected prior tool sequence$",
+    ):
+        BaselinePolicyV1(CONTEXT)(request("分析转化下降", prior))
+
+
+def test_each_case_uses_an_independent_policy_instance() -> None:
+    first = BaselinePolicyV1(CONTEXT)
+    second = BaselinePolicyV1(CONTEXT)
+    first_action = first(request("诊断 GMV 变化"))
+    first_prior = [empty_execution(first_action, 1)]
+
+    assert first(request("诊断 GMV 变化", first_prior)).tool_calls[0].name == (
+        "calculate_metrics"
+    )
+    second_action = second(request("分析 P003 商品异常"))
+    assert second_action.tool_calls[0].name == "query_product"
+    assert second_action.tool_calls[0].call_id == first_action.tool_calls[0].call_id

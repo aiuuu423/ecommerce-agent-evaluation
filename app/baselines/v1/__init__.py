@@ -1,4 +1,5 @@
 from .config import canonical_policy_bytes, policy_snapshot
+from .policy import BaselinePolicyProtocolError, BaselinePolicyV1
 from .schemas import (
     DateWindows,
     ExecutionPlan,
@@ -9,6 +10,8 @@ from .schemas import (
 )
 
 __all__ = [
+    "BaselinePolicyProtocolError",
+    "BaselinePolicyV1",
     "DateWindows",
     "ExecutionPlan",
     "ParsedRequest",
