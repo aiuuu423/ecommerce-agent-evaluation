@@ -19,8 +19,14 @@ _PRODUCT_ID_PATTERN = re.compile(r"(?<![A-Z0-9])P[0-9]{3}(?![A-Z0-9])", re.IGNOR
 _CLAUSE_SEPARATOR_PATTERN = re.compile(r"[,，、。;；!！?？\n]+")
 _REPLACEMENT_MARKER_PATTERN = re.compile(r"(?=(?:改为|转而|而是))")
 _REPLACEMENT_PREFIX_PATTERN = re.compile(r"^\s*(?:改为|转而|而是)")
-_NEGATION_PATTERN = re.compile(
-    r"(?:不要|无需|无须|不必|不用|并非|(?<!是)不是|不算|不属于|别)"
+_NEGATION_TOKEN = r"(?:不要|无需|无须|不必|不用|并非|(?<!是)不是|不算|不属于|别)"
+_NEGATION_PATTERN = re.compile(_NEGATION_TOKEN)
+_ADVERSATIVE_PATTERN = re.compile(r"(?:但|但是|不过|然而)")
+_DIRECT_NEGATED_ANALYSIS_PATTERN = re.compile(
+    _NEGATION_TOKEN
+    + r"\s*(?:再|先|继续)?\s*"
+    + r"(?:分析|查看|诊断|检查|查询|统计|对比|比较|复盘|采用|使用)"
+    + r"\s*(?:的)?\s*$"
 )
 _EVIDENCE_DISCLAIMER_PATTERN = re.compile(
     r"(?:不要|不可|不能|别).*(?:当作?|作为|算作?)?.*证据"
@@ -96,8 +102,12 @@ def _pair_is_negated(
     second: tuple[int, int],
 ) -> bool:
     left, right = sorted((first, second))
-    if _NEGATION_PATTERN.search(text[: left[0]]):
-        return True
+    prefix = text[: left[0]]
+    prefix_negations = tuple(_NEGATION_PATTERN.finditer(prefix))
+    if prefix_negations:
+        last_negation = prefix_negations[-1]
+        if not _ADVERSATIVE_PATTERN.search(prefix[last_negation.end() :]):
+            return True
     return _NEGATION_PATTERN.search(text[left[1] : right[0]]) is not None
 
 
@@ -122,6 +132,17 @@ def _contains_negated_product_id(text: str) -> bool:
     )
 
 
+def _contains_directly_negated_date(text: str) -> bool:
+    date_starts = (
+        *(match.start() for match in _RELATIVE_WINDOW_PATTERN.finditer(text)),
+        *(match.start() for match in _DATE_PATTERN.finditer(text)),
+    )
+    return any(
+        _DIRECT_NEGATED_ANALYSIS_PATTERN.search(text[:date_start])
+        for date_start in date_starts
+    )
+
+
 def _annotate_clauses(text: str) -> tuple[_Clause, ...]:
     annotated: list[_Clause] = []
     for clause in _split_clauses(text):
@@ -129,7 +150,11 @@ def _annotate_clauses(text: str) -> tuple[_Clause, ...]:
             status = _ClauseStatus.DISCLAIMER
         elif _REPLACEMENT_PREFIX_PATTERN.search(clause) and _contains_task_signal(clause):
             status = _ClauseStatus.REPLACEMENT
-        elif _contains_negated_task_signal(clause) or _contains_negated_product_id(clause):
+        elif (
+            _contains_negated_task_signal(clause)
+            or _contains_negated_product_id(clause)
+            or _contains_directly_negated_date(clause)
+        ):
             status = _ClauseStatus.NEGATED
         else:
             status = _ClauseStatus.ACTIVE

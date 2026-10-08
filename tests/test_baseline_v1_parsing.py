@@ -126,6 +126,73 @@ def test_parse_request_accepts_matching_current_and_previous_windows(
 
 
 @pytest.mark.parametrize(
+    "separator",
+    [";", "；", ",", "，", "。", "、", "!", "！", "?", "？", "\n"],
+)
+@pytest.mark.parametrize(
+    ("negated_window", "active_window", "expected"),
+    [
+        (
+            "最近7天",
+            "最近30天",
+            {
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-30",
+                "comparison_start_date": "2026-03-02",
+                "comparison_end_date": "2026-03-31",
+            },
+        ),
+        (
+            "2026-04-01",
+            "2026年4月15日",
+            {
+                "start_date": "2026-04-15",
+                "end_date": "2026-04-15",
+                "comparison_start_date": "2026-04-14",
+                "comparison_end_date": "2026-04-14",
+            },
+        ),
+        (
+            "2026-03-01至2026-03-07",
+            "2026/04/01～2026/04/10",
+            {
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-10",
+                "comparison_start_date": "2026-03-22",
+                "comparison_end_date": "2026-03-31",
+            },
+        ),
+    ],
+)
+def test_parse_request_ignores_directly_negated_date_windows(
+    context: PolicyContext,
+    separator: str,
+    negated_window: str,
+    active_window: str,
+    expected: dict[str, str],
+) -> None:
+    parsed = parse_request(
+        f"不要分析{negated_window}{separator}请诊断{active_window} GMV",
+        context,
+    )
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert parsed.unsupported_reason is None
+    assert parsed.windows.model_dump(mode="json") == expected
+
+
+def test_parse_request_does_not_treat_ordinary_negation_as_a_negated_date(
+    context: PolicyContext,
+) -> None:
+    parsed = parse_request("数据不是空但请分析最近7天 GMV 变化", context)
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert parsed.unsupported_reason is None
+    assert parsed.windows.start_date == date(2026, 4, 24)
+    assert parsed.windows.end_date == date(2026, 4, 30)
+
+
+@pytest.mark.parametrize(
     ("text", "reason"),
     [
         ("分析 2026-02-30 至 2026-03-02 的 GMV 变化", "invalid_date"),
