@@ -1,8 +1,11 @@
 import json
 from collections.abc import Mapping
+from math import isfinite
 from types import MappingProxyType
 from typing import Any
 
+from app.tools.metrics import METRIC_REQUIREMENTS
+from app.tools.registry import build_default_registry
 from app.tools.schemas import MetricName
 
 from .schemas import TaskKind
@@ -142,6 +145,57 @@ STABLE_SORT_FIELDS: Mapping[TaskKind, tuple[str, ...]] = MappingProxyType(
 )
 
 
+def _validate_policy_configuration() -> None:
+    supported_tasks = set(TaskKind) - {TaskKind.UNSUPPORTED}
+    for name, configured_tasks in (
+        ("ROUTING_KEYWORDS", set(ROUTING_KEYWORDS)),
+        ("TOOL_PATHS", set(TOOL_PATHS)),
+        ("METRICS", set(METRICS)),
+        ("STABLE_SORT_FIELDS", set(STABLE_SORT_FIELDS)),
+    ):
+        if configured_tasks != supported_tasks:
+            raise RuntimeError(f"{name} must define every supported task exactly once")
+
+    registered_tools = set(build_default_registry().names())
+    for task, tool_path in TOOL_PATHS.items():
+        unknown_tools = set(tool_path) - registered_tools
+        if unknown_tools:
+            raise RuntimeError(
+                f"{task.value} tool path contains unregistered tools: "
+                f"{sorted(unknown_tools)!r}"
+            )
+        required_tools = {
+            tool_name
+            for metric in METRICS[task]
+            for tool_name in METRIC_REQUIREMENTS[metric.value]
+        }
+        missing_tools = required_tools - set(tool_path)
+        if missing_tools:
+            raise RuntimeError(
+                f"{task.value} tool path is missing metric dependencies: "
+                f"{sorted(missing_tools)!r}"
+            )
+
+
+def _json_value(value: object, path: str = "$") -> object:
+    if value is None or type(value) in {bool, int, str}:
+        return value
+    if type(value) is float:
+        if not isfinite(value):
+            raise ValueError(f"{path}: JSON number must be finite")
+        return value
+    if type(value) is list:
+        return [_json_value(item, f"{path}[{index}]") for index, item in enumerate(value)]
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError(f"{path}: JSON object keys must be strings")
+            normalized[key] = _json_value(item, f"{path}.{key}")
+        return normalized
+    raise ValueError(f"{path}: value of type {type(value).__name__} is not valid JSON")
+
+
 def policy_snapshot() -> dict[str, Any]:
     return {
         "policy_name": POLICY_NAME,
@@ -170,10 +224,13 @@ def policy_snapshot() -> dict[str, Any]:
 def canonical_policy_bytes(snapshot: Mapping[str, Any] | None = None) -> bytes:
     payload = policy_snapshot() if snapshot is None else snapshot
     serialized = json.dumps(
-        payload,
+        _json_value(payload),
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
     )
     return f"{serialized}\n".encode()
+
+
+_validate_policy_configuration()

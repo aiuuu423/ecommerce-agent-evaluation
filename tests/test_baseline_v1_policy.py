@@ -1,5 +1,8 @@
 from datetime import date
 
+import pytest
+from pydantic import ValidationError
+
 from app.baselines.v1 import (
     DateWindows,
     ExecutionPlan,
@@ -10,7 +13,15 @@ from app.baselines.v1 import (
     canonical_policy_bytes,
     policy_snapshot,
 )
-from app.baselines.v1.config import DEFAULT_TOP_K, DEFAULT_WINDOW_DAYS
+from app.baselines.v1.config import (
+    DEFAULT_TOP_K,
+    DEFAULT_WINDOW_DAYS,
+    METRICS,
+    ROUTING_KEYWORDS,
+    TOOL_PATHS,
+)
+from app.tools.metrics import METRIC_REQUIREMENTS
+from app.tools.registry import build_default_registry
 from app.tools.schemas import MetricName
 
 
@@ -83,7 +94,7 @@ def test_public_policy_models_are_strict_and_serializable() -> None:
     )
     parsed = ParsedRequest(
         task=TaskKind.GMV_DIAGNOSIS,
-        product_ids=["P003"],
+        product_ids=("P003",),
         windows=windows,
     )
     plan = ExecutionPlan(
@@ -92,7 +103,7 @@ def test_public_policy_models_are_strict_and_serializable() -> None:
             ToolStep(tool_name="query_sales"),
             ToolStep(
                 tool_name="calculate_metrics",
-                metrics=("current_gmv",),
+                metrics=(MetricName.CURRENT_GMV,),
             ),
         ),
     )
@@ -100,3 +111,150 @@ def test_public_policy_models_are_strict_and_serializable() -> None:
     assert context.dataset_version == "v1"
     assert parsed.model_dump(mode="json")["windows"]["end_date"] == "2026-04-30"
     assert plan.steps[1].metrics == (MetricName.CURRENT_GMV,)
+
+
+def test_policy_config_containers_are_deeply_immutable() -> None:
+    with pytest.raises(TypeError):
+        TOOL_PATHS[TaskKind.GMV_DIAGNOSIS] = ("query_sales",)  # type: ignore[index]
+    with pytest.raises(TypeError):
+        TOOL_PATHS[TaskKind.GMV_DIAGNOSIS][0] = "query_traffic"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        ROUTING_KEYWORDS[TaskKind.GMV_DIAGNOSIS][0][0] = "revenue"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (
+            PolicyContext,
+            {
+                "dataset_id": "e1e81533c25e03e5",
+                "dataset_version": 1,
+                "as_of_date": "2026-04-30",
+            },
+        ),
+        (
+            DateWindows,
+            {
+                "start_date": "2026-04-01",
+                "end_date": "2026-04-30",
+                "comparison_start_date": "2026-03-02",
+                "comparison_end_date": "2026-03-31",
+            },
+        ),
+    ],
+)
+def test_policy_models_reject_implicit_type_conversion(
+    model: type[PolicyContext] | type[DateWindows],
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+def test_policy_model_containers_are_deeply_immutable() -> None:
+    windows = DateWindows(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 30),
+        comparison_start_date=date(2026, 3, 2),
+        comparison_end_date=date(2026, 3, 31),
+    )
+    parsed = ParsedRequest(
+        task=TaskKind.GMV_DIAGNOSIS,
+        product_ids=("P003",),
+        windows=windows,
+    )
+
+    assert parsed.product_ids == ("P003",)
+    with pytest.raises(TypeError):
+        parsed.product_ids[0] = "P004"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("task", "reason"),
+    [
+        (TaskKind.UNSUPPORTED, None),
+        (TaskKind.UNSUPPORTED, ""),
+        (TaskKind.GMV_DIAGNOSIS, "not supported"),
+    ],
+)
+def test_parsed_request_rejects_inconsistent_unsupported_reason(
+    task: TaskKind,
+    reason: str | None,
+) -> None:
+    windows = DateWindows(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 30),
+        comparison_start_date=date(2026, 3, 2),
+        comparison_end_date=date(2026, 3, 31),
+    )
+    with pytest.raises(ValidationError):
+        ParsedRequest(
+            task=task,
+            product_ids=(),
+            windows=windows,
+            unsupported_reason=reason,
+        )
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        {"tool_name": "calculate_metrics"},
+        {"tool_name": "query_sales", "metrics": (MetricName.CURRENT_GMV,)},
+        {"tool_name": "query_sales", "group_by": ("product_id",)},
+        {
+            "tool_name": "calculate_metrics",
+            "metrics": (MetricName.CURRENT_GMV, MetricName.CURRENT_GMV),
+        },
+        {
+            "tool_name": "calculate_metrics",
+            "metrics": (MetricName.CURRENT_GMV,),
+            "group_by": ("product_id", "product_id"),
+        },
+    ],
+)
+def test_tool_step_rejects_invalid_metric_and_grouping_states(
+    step: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ToolStep.model_validate(step)
+
+
+def test_execution_plan_rejects_empty_or_unsupported_plans() -> None:
+    with pytest.raises(ValidationError):
+        ExecutionPlan(task=TaskKind.GMV_DIAGNOSIS, steps=())
+    with pytest.raises(ValidationError):
+        ExecutionPlan(
+            task=TaskKind.UNSUPPORTED,
+            steps=(ToolStep(tool_name="query_sales"),),
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"outer": {1: "value"}},
+        {"outer": {"nested": object()}},
+        {"outer": {"nested": float("nan")}},
+        {"outer": {"nested": float("inf")}},
+    ],
+)
+def test_canonical_policy_bytes_recursively_rejects_non_json_values(
+    payload: dict[object, object],
+) -> None:
+    with pytest.raises(ValueError):
+        canonical_policy_bytes(payload)  # type: ignore[arg-type]
+
+
+def test_policy_tools_exist_and_metric_dependencies_are_in_each_tool_path() -> None:
+    registered_names = set(build_default_registry().names())
+
+    for task, tool_path in TOOL_PATHS.items():
+        assert set(tool_path) <= registered_names
+        required_tools = {
+            tool_name
+            for metric in METRICS[task]
+            for tool_name in METRIC_REQUIREMENTS[metric.value]
+        }
+        assert required_tools <= set(tool_path)
