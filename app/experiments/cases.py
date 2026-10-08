@@ -1,15 +1,43 @@
 import json
 from collections import Counter
+from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from app.data.manifest import manifest_id
 from app.data.schemas import EvaluationCase, JsonValue, Sha256Hex
 
 CaseSplit = Literal["development", "public_validation"]
+_MANIFEST_MAPPING_FIELDS = (
+    "business_task_counts",
+    "capability_counts",
+    "datasets",
+    "difficulty_counts",
+    "split_counts",
+    "split_strategy",
+)
+
+
+def _deep_freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _deep_freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
+
+
+def _json_compatible(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_json_compatible(item) for item in value]
+    return value
 
 
 class CaseModel(BaseModel):
@@ -34,17 +62,17 @@ class ToolContractIdentity(CaseModel):
 
 
 class EvaluationCaseManifest(CaseModel):
-    business_task_counts: dict[str, int]
-    capability_counts: dict[str, int]
+    business_task_counts: Mapping[str, int]
+    capability_counts: Mapping[str, int]
     case_count: int = Field(gt=0)
     case_schema_version: str = Field(min_length=1)
     case_set_id: str = Field(pattern=r"^[0-9a-f]{16}$")
-    datasets: dict[CaseSplit, DatasetIdentity]
-    difficulty_counts: dict[str, int]
+    datasets: Mapping[CaseSplit, DatasetIdentity]
+    difficulty_counts: Mapping[str, int]
     jsonl_sha256: Sha256Hex
     source_label: str = Field(min_length=1)
-    split_counts: dict[CaseSplit, int]
-    split_strategy: dict[str, JsonValue]
+    split_counts: Mapping[CaseSplit, int]
+    split_strategy: Mapping[str, JsonValue]
     tool_contract: ToolContractIdentity
 
     @model_validator(mode="after")
@@ -66,7 +94,17 @@ class EvaluationCaseManifest(CaseModel):
             for count in counts.values()
         ):
             raise ValueError("manifest counts must be non-negative integers")
+        for field_name in _MANIFEST_MAPPING_FIELDS:
+            object.__setattr__(
+                self,
+                field_name,
+                _deep_freeze(getattr(self, field_name)),
+            )
         return self
+
+    @field_serializer(*_MANIFEST_MAPPING_FIELDS, when_used="json")
+    def serialize_frozen_mapping(self, value: object) -> object:
+        return _json_compatible(value)
 
 
 class RunnableCase(CaseModel):
@@ -80,6 +118,18 @@ class RunnableCase(CaseModel):
 class CaseBundle(CaseModel):
     manifest: EvaluationCaseManifest
     cases: tuple[RunnableCase, ...]
+
+    @model_validator(mode="before")
+    @classmethod
+    def thaw_manifest_for_revalidation(cls, value: object) -> object:
+        if isinstance(value, dict) and isinstance(
+            value.get("manifest"), EvaluationCaseManifest
+        ):
+            return {
+                **value,
+                "manifest": value["manifest"].model_dump(mode="json"),
+            }
+        return value
 
     @model_validator(mode="after")
     def validate_bundle(self) -> "CaseBundle":

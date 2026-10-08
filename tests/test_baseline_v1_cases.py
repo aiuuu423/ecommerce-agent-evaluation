@@ -2,6 +2,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 from pydantic import ValidationError
@@ -114,6 +115,56 @@ def test_load_runnable_cases_validates_identity_and_projects_only_safe_fields(
         bundle.cases[0].user_input = "tampered"
 
 
+def test_case_bundle_deeply_freezes_manifest_mappings_and_serializes_canonically(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+) -> None:
+    def add_nested_strategy(manifest: dict[str, object]) -> None:
+        split_strategy = manifest["split_strategy"]
+        assert isinstance(split_strategy, dict)
+        split_strategy["nested"] = {"levels": [{"enabled": True}]}
+
+    case_dir = _write_case_dir(
+        tmp_path / "cases",
+        two_source_cases,
+        mutate_manifest=add_nested_strategy,
+    )
+    source_manifest = json.loads(
+        (case_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    bundle = load_runnable_cases(case_dir)
+
+    manifest = bundle.manifest
+    frozen_mappings = (
+        manifest.business_task_counts,
+        manifest.capability_counts,
+        manifest.datasets,
+        manifest.difficulty_counts,
+        manifest.split_counts,
+        manifest.split_strategy,
+        manifest.split_strategy["nested"],
+        manifest.split_strategy["nested"]["levels"][0],
+    )
+    assert all(isinstance(mapping, MappingProxyType) for mapping in frozen_mappings)
+    assert isinstance(manifest.split_strategy["nested"]["levels"], tuple)
+    for mapping in frozen_mappings:
+        with pytest.raises(TypeError):
+            mapping["tampered"] = True
+    with pytest.raises(TypeError):
+        manifest.split_strategy["nested"]["levels"][0] = {"enabled": False}
+
+    serialized = manifest.model_dump(mode="json")
+    assert serialized == source_manifest
+    canonical = json.dumps(
+        bundle.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert json.loads(canonical)["manifest"] == source_manifest
+
+
 def test_runnable_case_is_strict_and_forbids_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         RunnableCase.model_validate(
@@ -178,15 +229,21 @@ def test_load_runnable_cases_rejects_duplicate_case_ids(
         load_runnable_cases(case_dir)
 
 
-@pytest.mark.parametrize("field", ["dataset_id", "dataset_version"])
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("dataset_id", "0" * 16),
+        ("dataset_version", "wrong-version"),
+        ("generator_config_hash", "0" * 64),
+    ],
+)
 def test_load_runnable_cases_rejects_dataset_mapping_mismatch(
     tmp_path: Path,
     two_source_cases: list[dict[str, object]],
     field: str,
+    replacement: str,
 ) -> None:
-    two_source_cases[0][field] = (
-        "0" * 16 if field == "dataset_id" else "wrong-version"
-    )
+    two_source_cases[0][field] = replacement
     case_dir = _write_case_dir(tmp_path / "cases", two_source_cases)
 
     with pytest.raises(ValueError, match="dataset mapping"):
