@@ -71,6 +71,23 @@ def _source_line(results: dict[str, AnyToolResult]) -> str:
     return f"数据来源：{'、'.join(labels)}。"
 
 
+def _window_line(parsed: ParsedRequest) -> str:
+    windows = parsed.windows
+    return (
+        f"时间窗口：当前期 {windows.start_date.isoformat()} 至 "
+        f"{windows.end_date.isoformat()}；对照期 "
+        f"{windows.comparison_start_date.isoformat()} 至 "
+        f"{windows.comparison_end_date.isoformat()}。"
+    )
+
+
+def _answer_preamble(
+    parsed: ParsedRequest,
+    results: dict[str, AnyToolResult],
+) -> list[str]:
+    return [_source_line(results), _window_line(parsed)]
+
+
 def _has_warning(results: dict[str, AnyToolResult]) -> bool:
     return any(result.warnings for result in results.values())
 
@@ -85,10 +102,16 @@ def _metrics_result(
 
 
 def _insufficient_answer(
+    parsed: ParsedRequest,
     results: dict[str, AnyToolResult],
     reason: str,
 ) -> str:
-    return f"{_source_line(results)}\n数据不足：{reason}，无法形成结论。"
+    return "\n".join(
+        [
+            *_answer_preamble(parsed, results),
+            f"数据不足：{reason}，无法形成结论。",
+        ]
+    )
 
 
 def _contains_missing_value(
@@ -342,13 +365,13 @@ def render_final_answer(
 ) -> str:
     results = tool_results_by_name(executions)
     if _has_warning(results):
-        return _insufficient_answer(results, "工具结果包含警告")
+        return _insufficient_answer(parsed, results, "工具结果包含警告")
 
     metrics = _metrics_result(results)
     if metrics is None:
-        return _insufficient_answer(results, "缺少指标结果")
+        return _insufficient_answer(parsed, results, "缺少指标结果")
     if not metrics.rows:
-        return _insufficient_answer(results, "指标结果为空")
+        return _insufficient_answer(parsed, results, "指标结果为空")
 
     rows = _select_output_rows(parsed, metrics)
     has_missing_value = _contains_missing_value(metrics, rows)
@@ -368,6 +391,6 @@ def render_final_answer(
             has_missing_value=has_missing_value,
         )
     else:
-        return _insufficient_answer(results, "任务类型不受支持")
+        return _insufficient_answer(parsed, results, "任务类型不受支持")
 
-    return "\n".join([_source_line(results), *lines])
+    return "\n".join([*_answer_preamble(parsed, results), *lines])

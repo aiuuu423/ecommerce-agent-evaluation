@@ -34,8 +34,9 @@ WINDOWS = DateWindows(
 def parsed(
     task: TaskKind,
     product_ids: tuple[str, ...] = (),
+    windows: DateWindows = WINDOWS,
 ) -> ParsedRequest:
-    return ParsedRequest(task=task, product_ids=product_ids, windows=WINDOWS)
+    return ParsedRequest(task=task, product_ids=product_ids, windows=windows)
 
 
 def execution(result: object, number: int = 1) -> PriorToolExecution:
@@ -289,6 +290,10 @@ def test_five_answer_templates_only_render_tool_evidence(
     answer = render_final_answer(parsed(task), [metrics_execution(task, [row])])
 
     assert SOURCE_LABEL in answer
+    assert (
+        "时间窗口：当前期 2026-04-01 至 2026-04-30；"
+        "对照期 2026-03-02 至 2026-03-31。"
+    ) in answer
     for fragment in expected_fragments:
         assert fragment in answer
     lowered = answer.lower()
@@ -421,6 +426,106 @@ def test_none_inside_selected_top_five_uses_limitation_before_any_claim() -> Non
     assert "P001" in answer
     assert "限制：" in answer
     assert "结论：" not in answer
+
+
+@pytest.mark.parametrize(
+    ("task", "row"),
+    [
+        (
+            TaskKind.GMV_DIAGNOSIS,
+            {
+                "current_gmv": None,
+                "previous_gmv": 1000.0,
+                "gmv_change_rate": None,
+                "current_orders": 100,
+                "previous_orders": 100,
+                "current_aov": None,
+                "previous_aov": 10.0,
+                "aov_change_rate": None,
+            },
+        ),
+        (
+            TaskKind.CONVERSION_DECLINE,
+            conversion_row("P001", -0.02, current_visits=None),
+        ),
+        (
+            TaskKind.PRODUCT_ANOMALY,
+            {**product_row("P003", -0.25), "current_gmv": None},
+        ),
+        (
+            TaskKind.NEXT_WEEK_PRIORITY,
+            {
+                "product_id": "P004",
+                "current_gmv": None,
+                "gmv_change_rate": -0.3,
+                "current_visits": 500,
+                "traffic_change_rate": -0.2,
+                "current_cvr": 0.16,
+                "cvr_change": -0.04,
+            },
+        ),
+        (
+            TaskKind.PRODUCTS_TO_WATCH,
+            {
+                "product_id": "P005",
+                "evidence_value": None,
+                "gmv_change_rate": -0.1,
+                "traffic_change_rate": -0.2,
+                "cvr_change": -0.03,
+                "current_refund_rate": 0.15,
+            },
+        ),
+    ],
+)
+def test_five_limited_answer_templates_render_parsed_windows(
+    task: TaskKind,
+    row: dict[str, object],
+) -> None:
+    answer = render_final_answer(parsed(task), [metrics_execution(task, [row])])
+
+    assert answer.startswith(f"数据来源：{SOURCE_LABEL}。\n时间窗口：")
+    assert (
+        "当前期 2026-04-01 至 2026-04-30；"
+        "对照期 2026-03-02 至 2026-03-31。"
+    ) in answer
+    assert "限制：" in answer
+
+
+def test_changing_only_parsed_windows_changes_answer() -> None:
+    metrics = metrics_execution(
+        TaskKind.GMV_DIAGNOSIS,
+        [
+            {
+                "current_gmv": 1234.5,
+                "previous_gmv": 1000.0,
+                "gmv_change_rate": 0.2345,
+                "current_orders": 125,
+                "previous_orders": 100,
+                "current_aov": 9.876,
+                "previous_aov": 10.0,
+                "aov_change_rate": -0.0124,
+            }
+        ],
+    )
+    changed_windows = DateWindows(
+        start_date=date(2026, 4, 8),
+        end_date=date(2026, 4, 14),
+        comparison_start_date=date(2026, 4, 1),
+        comparison_end_date=date(2026, 4, 7),
+    )
+
+    original = render_final_answer(parsed(TaskKind.GMV_DIAGNOSIS), [metrics])
+    changed = render_final_answer(
+        parsed(TaskKind.GMV_DIAGNOSIS, windows=changed_windows),
+        [metrics],
+    )
+
+    assert original != changed
+    assert (
+        "时间窗口：当前期 2026-04-08 至 2026-04-14；"
+        "对照期 2026-04-01 至 2026-04-07。"
+    ) in changed
+    assert "2026-03-02" not in changed
 
 
 @pytest.mark.parametrize("mode", ["none", "empty", "warnings"])
