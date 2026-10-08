@@ -1,0 +1,397 @@
+import secrets
+import subprocess
+import sys
+from collections import Counter
+from collections.abc import Mapping
+from contextlib import ExitStack
+from datetime import UTC, date, datetime
+from hashlib import sha256
+from importlib.metadata import version
+from pathlib import Path
+
+from app.agents import AgentRunner, RunRequest, RunResult, TraceEventType
+from app.baselines.v1.config import POLICY_NAME, POLICY_VERSION, policy_snapshot
+from app.baselines.v1.policy import BaselinePolicyV1
+from app.baselines.v1.schemas import PolicyContext
+from app.data.database import Catalog, open_dataset
+from app.data.manifest import TABLE_NAMES, file_sha256
+from app.llm import DeterministicAdapter
+from app.tools import build_default_registry
+from app.tools.schemas import canonical_tool_result_payload
+
+from .artifacts import (
+    ArtifactWriter,
+    CaseRunRecord,
+    DatasetArtifactIdentity,
+    PolicySnapshot,
+    RunArtifactBundle,
+    RunManifest,
+    RunSummary,
+    RuntimeVersions,
+    canonical_json_bytes,
+)
+from .cases import CaseBundle
+
+_PROJECT_ROOT = Path(__file__).parents[2]
+_POLICY_SOURCE_FILES = (
+    "app/baselines/v1/answers.py",
+    "app/baselines/v1/config.py",
+    "app/baselines/v1/parsing.py",
+    "app/baselines/v1/policy.py",
+    "app/baselines/v1/schemas.py",
+)
+_SAFE_CASE_ERROR_CODES = {
+    "adapter_start_error",
+    "adapter_error",
+    "adapter_protocol_error",
+    "duplicate_call_id",
+    "unknown_tool",
+    "invalid_arguments",
+    "invalid_tool_result",
+    "tool_execution_error",
+    "duplicate_result_id",
+    "max_steps_exceeded",
+}
+
+
+class RunLevelError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def catalog_as_of_date(catalog: Catalog) -> date:
+    row = catalog.execute(
+        """
+        select
+            (select max(order_date) from orders),
+            (select max(date) from traffic),
+            (select max(date) from marketing)
+        """
+    ).fetchone()
+    if row is None or len(row) != 3 or any(value is None for value in row):
+        raise RunLevelError("dataset_date_unavailable")
+    if len(set(row)) != 1:
+        raise RunLevelError("dataset_date_mismatch")
+    value = row[0]
+    if not isinstance(value, date):
+        raise RunLevelError("dataset_date_invalid")
+    return value
+
+
+def policy_source_identity() -> tuple[str, tuple[str, ...]]:
+    digest = sha256()
+    for relative_path in _POLICY_SOURCE_FILES:
+        path = _PROJECT_ROOT / relative_path
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest(), _POLICY_SOURCE_FILES
+
+
+def dataset_source_identity(
+    dataset_dirs: Mapping[str, Path],
+) -> tuple[tuple[str, str, str], ...]:
+    identities = []
+    artifact_names = (
+        "manifest.json",
+        "data_quality_report.json",
+        *(f"{table_name}.parquet" for table_name in TABLE_NAMES),
+    )
+    for dataset_id, path in sorted(dataset_dirs.items()):
+        digest = sha256()
+        for artifact_name in artifact_names:
+            digest.update(artifact_name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update((path / artifact_name).read_bytes())
+            digest.update(b"\0")
+        identities.append(
+            (
+                dataset_id,
+                file_sha256(path / "manifest.json"),
+                digest.hexdigest(),
+            )
+        )
+    return tuple(identities)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _utc_text(value: datetime) -> str:
+    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _run_id(started_at: datetime) -> str:
+    timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
+    return f"baseline-v1__{timestamp}__{secrets.token_hex(4)}"
+
+
+def _git_identity() -> tuple[str, bool]:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=_PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RunLevelError("git_identity_error") from exc
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise RunLevelError("git_identity_error")
+    return commit, bool(status)
+
+
+def _runtime_versions() -> RuntimeVersions:
+    try:
+        return RuntimeVersions(
+            python=sys.version.split()[0],
+            pydantic=version("pydantic"),
+            duckdb=version("duckdb"),
+            pandas=version("pandas"),
+            pyarrow=version("pyarrow"),
+        )
+    except Exception as exc:
+        raise RunLevelError("runtime_identity_error") from exc
+
+
+def _case_error_code(result: RunResult) -> str:
+    for event in reversed(result.decision_trace):
+        if event.event_type is TraceEventType.ERROR:
+            code = event.payload.get("code")
+            if isinstance(code, str) and code in _SAFE_CASE_ERROR_CODES:
+                return code
+    return "case_execution_error"
+
+
+def _summary(records: tuple[CaseRunRecord, ...]) -> RunSummary:
+    statuses = Counter(record.status for record in records)
+    splits = Counter(record.split for record in records)
+    split_statuses = Counter((record.split, record.status) for record in records)
+    return RunSummary(
+        total=len(records),
+        completed=statuses["completed"],
+        failed=statuses["failed"],
+        stopped=0,
+        split_counts={
+            "development": splits["development"],
+            "public_validation": splits["public_validation"],
+        },
+        split_status_counts={
+            split: {
+                "completed": split_statuses[(split, "completed")],
+                "failed": split_statuses[(split, "failed")],
+            }
+            for split in ("development", "public_validation")
+        },
+        first_case_id=records[0].case_id if records else None,
+        last_case_id=records[-1].case_id if records else None,
+        published=True,
+        evaluation_status="pending_not_run",
+    )
+
+
+class BaselineBatchRunner:
+    def run(
+        self,
+        cases: CaseBundle,
+        dataset_dirs: Mapping[str, Path],
+        output_root: Path,
+    ) -> Path:
+        expected_by_split = cases.manifest.datasets
+        expected_ids = {
+            expected_by_split["development"].dataset_id,
+            expected_by_split["public_validation"].dataset_id,
+        }
+        if set(dataset_dirs) != expected_ids:
+            raise RunLevelError("dataset_mapping_error")
+        for case in cases.cases:
+            expected = expected_by_split[case.split]
+            if (
+                case.dataset_id != expected.dataset_id
+                or case.dataset_version != expected.dataset_version
+            ):
+                raise RunLevelError("dataset_mapping_error")
+
+        started_at = _utc_now()
+        snapshot = PolicySnapshot.model_validate(policy_snapshot(), strict=True)
+        snapshot_sha256 = sha256(canonical_json_bytes(snapshot)).hexdigest()
+        try:
+            initial_policy_identity = policy_source_identity()
+        except OSError as exc:
+            raise RunLevelError("policy_identity_error") from exc
+
+        with ExitStack() as stack:
+            catalogs: dict[str, Catalog] = {}
+            for dataset_id, dataset_dir in dataset_dirs.items():
+                try:
+                    catalog = stack.enter_context(open_dataset(dataset_dir))
+                except Exception as exc:
+                    raise RunLevelError("catalog_open_error") from exc
+                summary = catalog.verified_summary
+                if (
+                    summary["dataset_id"] != dataset_id
+                    or summary["dataset_version"]
+                    != next(
+                        identity.dataset_version
+                        for identity in expected_by_split.values()
+                        if identity.dataset_id == dataset_id
+                    )
+                ):
+                    raise RunLevelError("dataset_identity_mismatch")
+                catalogs[dataset_id] = catalog
+
+            try:
+                initial_dataset_identity = dataset_source_identity(dataset_dirs)
+            except OSError as exc:
+                raise RunLevelError("dataset_identity_error") from exc
+            as_of_dates = {
+                dataset_id: catalog_as_of_date(catalog)
+                for dataset_id, catalog in catalogs.items()
+            }
+
+            records: list[CaseRunRecord] = []
+            for sequence, case in enumerate(cases.cases, start=1):
+                try:
+                    policy = BaselinePolicyV1(
+                        PolicyContext(
+                            dataset_id=case.dataset_id,
+                            dataset_version=case.dataset_version,
+                            as_of_date=as_of_dates[case.dataset_id],
+                        )
+                    )
+                    adapter = DeterministicAdapter(policy)
+                    runner = AgentRunner(
+                        registry=build_default_registry(),
+                        adapter=adapter,
+                    )
+                    result = runner.run(
+                        RunRequest(user_input=case.user_input),
+                        catalogs[case.dataset_id],
+                    )
+                except Exception:
+                    result = RunResult(
+                        status="failed",
+                        final_answer=None,
+                        prior_tool_executions=[],
+                        decision_trace=(),
+                        usage=None,
+                    )
+                records.append(
+                    CaseRunRecord(
+                        sequence=sequence,
+                        case_id=case.case_id,
+                        split=case.split,
+                        dataset_id=case.dataset_id,
+                        dataset_version=case.dataset_version,
+                        user_input=case.user_input,
+                        status=result.status,
+                        final_answer=result.final_answer,
+                        prior_tool_executions=tuple(
+                            {
+                                "call_id": execution.call_id,
+                                "arguments": execution.model_dump(mode="json")[
+                                    "arguments"
+                                ],
+                                "result": canonical_tool_result_payload(
+                                    execution.result
+                                ),
+                            }
+                            for execution in result.prior_tool_executions
+                        ),
+                        decision_trace=tuple(
+                            event.model_dump(mode="json")
+                            for event in result.decision_trace
+                            if result.status == "completed"
+                            or event.event_type is not TraceEventType.ERROR
+                        ),
+                        usage=None,
+                        error_code=(
+                            None
+                            if result.status == "completed"
+                            else _case_error_code(result)
+                        ),
+                    )
+                )
+
+            try:
+                final_dataset_identity = dataset_source_identity(dataset_dirs)
+            except OSError as exc:
+                raise RunLevelError("dataset_identity_error") from exc
+            if final_dataset_identity != initial_dataset_identity:
+                raise RunLevelError("dataset_identity_drift")
+            try:
+                final_policy_identity = policy_source_identity()
+            except OSError as exc:
+                raise RunLevelError("policy_identity_error") from exc
+            if (
+                final_policy_identity != initial_policy_identity
+                or sha256(canonical_json_bytes(policy_snapshot())).hexdigest()
+                != snapshot_sha256
+            ):
+                raise RunLevelError("policy_identity_drift")
+
+        completed_at = _utc_now()
+        git_commit, git_dirty = _git_identity()
+        dataset_manifest_hashes = {
+            dataset_id: manifest_hash
+            for dataset_id, manifest_hash, _ in initial_dataset_identity
+        }
+        dataset_artifacts = tuple(
+            DatasetArtifactIdentity(
+                split=split,
+                dataset_id=identity.dataset_id,
+                dataset_version=identity.dataset_version,
+                manifest_sha256=dataset_manifest_hashes[identity.dataset_id],
+            )
+            for split, identity in (
+                ("development", expected_by_split["development"]),
+                ("public_validation", expected_by_split["public_validation"]),
+            )
+        )
+        record_tuple = tuple(records)
+        manifest = RunManifest(
+            artifact_schema_version="1.0",
+            run_id=_run_id(started_at),
+            baseline_name=POLICY_NAME,
+            baseline_version=POLICY_VERSION,
+            started_at_utc=_utc_text(started_at),
+            completed_at_utc=_utc_text(completed_at),
+            git_commit=git_commit,
+            git_dirty=git_dirty,
+            runtime_versions=_runtime_versions(),
+            case_set_id=cases.manifest.case_set_id,
+            case_jsonl_sha256=cases.manifest.jsonl_sha256,
+            case_manifest_sha256=sha256(
+                canonical_json_bytes(cases.manifest)
+            ).hexdigest(),
+            datasets=dataset_artifacts,
+            tool_contract_version=cases.manifest.tool_contract.version,
+            tool_contract_sha256=cases.manifest.tool_contract.sha256,
+            policy_snapshot_sha256=snapshot_sha256,
+            policy_source_files=initial_policy_identity[1],
+            policy_source_sha256=initial_policy_identity[0],
+            output_files=None,
+            evaluation_status="pending_not_run",
+            usage_status="unavailable",
+        )
+        bundle = RunArtifactBundle(
+            records=record_tuple,
+            expected_case_ids=tuple(case.case_id for case in cases.cases),
+            summary=_summary(record_tuple),
+            policy_snapshot=snapshot,
+            manifest=manifest,
+        )
+        return ArtifactWriter(output_root).publish(bundle)

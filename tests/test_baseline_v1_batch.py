@@ -1,0 +1,345 @@
+import json
+from datetime import date
+from hashlib import sha256
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from app.agents import RunResult, TraceEvent, TraceEventType
+from app.data.database import open_dataset
+from app.data.generator import build_snapshot
+from app.experiments.artifacts import ArtifactWriter, verify_published_run
+from app.experiments.baseline_v1 import (
+    BaselineBatchRunner,
+    RunLevelError,
+    catalog_as_of_date,
+)
+from app.experiments.cases import (
+    CaseBundle,
+    DatasetIdentity,
+    EvaluationCaseManifest,
+    RunnableCase,
+)
+
+ROOT = Path(__file__).parents[1]
+DEVELOPMENT_CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
+PUBLIC_VALIDATION_CONFIG = (
+    ROOT / "configs/data/synthetic_public_validation_v1.yaml"
+)
+SHA = "a" * 64
+
+
+@pytest.fixture(scope="module")
+def dataset_dirs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    root = tmp_path_factory.mktemp("baseline-batch")
+    paths = {
+        "development": root / "development",
+        "public_validation": root / "public-validation",
+    }
+    build_snapshot(DEVELOPMENT_CONFIG, paths["development"])
+    build_snapshot(PUBLIC_VALIDATION_CONFIG, paths["public_validation"])
+    return paths
+
+
+def _dataset_metadata(path: Path) -> dict[str, object]:
+    return json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+
+
+def _case_bundle(dataset_dirs: dict[str, Path]) -> CaseBundle:
+    development = _dataset_metadata(dataset_dirs["development"])
+    public_validation = _dataset_metadata(dataset_dirs["public_validation"])
+    datasets = {
+        "development": DatasetIdentity(
+            dataset_id=development["dataset_id"],
+            dataset_version=development["dataset_version"],
+            generator_config_hash=development["config_sha256"],
+        ),
+        "public_validation": DatasetIdentity(
+            dataset_id=public_validation["dataset_id"],
+            dataset_version=public_validation["dataset_version"],
+            generator_config_hash=public_validation["config_sha256"],
+        ),
+    }
+    cases = (
+        RunnableCase(
+            case_id="CASE_001",
+            user_input="诊断最近30天 GMV 变化",
+            split="development",
+            dataset_id=datasets["development"].dataset_id,
+            dataset_version=datasets["development"].dataset_version,
+        ),
+        RunnableCase(
+            case_id="CASE_002",
+            user_input="列出最近30天需要关注的商品",
+            split="public_validation",
+            dataset_id=datasets["public_validation"].dataset_id,
+            dataset_version=datasets["public_validation"].dataset_version,
+        ),
+        RunnableCase(
+            case_id="CASE_003",
+            user_input="分析最近30天 P003 的转化下降",
+            split="development",
+            dataset_id=datasets["development"].dataset_id,
+            dataset_version=datasets["development"].dataset_version,
+        ),
+        RunnableCase(
+            case_id="CASE_004",
+            user_input="给出最近30天下周经营优先级",
+            split="public_validation",
+            dataset_id=datasets["public_validation"].dataset_id,
+            dataset_version=datasets["public_validation"].dataset_version,
+        ),
+    )
+    return CaseBundle(
+        manifest=EvaluationCaseManifest(
+            business_task_counts={"gmv_change": 1, "products_to_watch": 1,
+                                  "conversion_decline": 1, "next_week_priorities": 1},
+            capability_counts={"diagnosis": 4},
+            case_count=4,
+            case_schema_version="1.0",
+            case_set_id="1" * 16,
+            datasets=datasets,
+            difficulty_counts={"medium": 4},
+            jsonl_sha256=SHA,
+            source_label="test cases",
+            split_counts={"development": 2, "public_validation": 2},
+            split_strategy={"kind": "test"},
+            tool_contract={"version": "1.0", "sha256": SHA},
+        ),
+        cases=cases,
+    )
+
+
+def _dataset_mapping(
+    bundle: CaseBundle,
+    dataset_dirs: dict[str, Path],
+) -> dict[str, Path]:
+    return {
+        bundle.manifest.datasets["development"].dataset_id: dataset_dirs["development"],
+        bundle.manifest.datasets["public_validation"].dataset_id: (
+            dataset_dirs["public_validation"]
+        ),
+    }
+
+
+def test_batch_routes_two_catalogs_in_order_with_fresh_runtime_per_case(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    mapping = _dataset_mapping(bundle, dataset_dirs)
+    policies: list[object] = []
+    adapters: list[object] = []
+    runners: list[object] = []
+    routed_dataset_ids: list[str] = []
+
+    class TrackingPolicy:
+        def __init__(self, context: object) -> None:
+            self.context = context
+            policies.append(self)
+
+    class TrackingAdapter:
+        def __init__(self, policy: object) -> None:
+            self.policy = policy
+            adapters.append(self)
+
+    class TrackingRunner:
+        def __init__(self, registry: object, adapter: object) -> None:
+            self.registry = registry
+            self.adapter = adapter
+            runners.append(self)
+
+        def run(self, request: object, catalog: object) -> RunResult:
+            routed_dataset_ids.append(catalog.verified_summary["dataset_id"])
+            return RunResult(
+                status="completed",
+                final_answer=f"完成：{request.user_input}",
+                prior_tool_executions=[],
+                decision_trace=(),
+                usage=None,
+            )
+
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.BaselinePolicyV1", TrackingPolicy
+    )
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.DeterministicAdapter", TrackingAdapter
+    )
+    monkeypatch.setattr("app.experiments.baseline_v1.AgentRunner", TrackingRunner)
+
+    published = BaselineBatchRunner().run(bundle, mapping, tmp_path)
+    verified = verify_published_run(published)
+
+    assert [record.case_id for record in verified.records] == [
+        case.case_id for case in bundle.cases
+    ]
+    assert routed_dataset_ids == [case.dataset_id for case in bundle.cases]
+    assert len({id(item) for item in policies}) == len(bundle.cases)
+    assert len({id(item) for item in adapters}) == len(bundle.cases)
+    assert len({id(item) for item in runners}) == len(bundle.cases)
+    assert all(record.usage is None for record in verified.records)
+    assert verified.summary.split_counts.model_dump() == {
+        "development": 2,
+        "public_validation": 2,
+    }
+    assert verified.summary.evaluation_status == "pending_not_run"
+    assert verified.manifest.usage_status == "unavailable"
+    assert verified.manifest.started_at_utc.endswith("Z")
+    assert verified.manifest.completed_at_utc.endswith("Z")
+    assert len(verified.manifest.git_commit) == 40
+    assert verified.manifest.runtime_versions.python
+    assert verified.manifest.policy_snapshot_sha256
+    assert [item.dataset_id for item in verified.manifest.datasets] == [
+        bundle.manifest.datasets["development"].dataset_id,
+        bundle.manifest.datasets["public_validation"].dataset_id,
+    ]
+    assert [item.manifest_sha256 for item in verified.manifest.datasets] == [
+        sha256(
+            (dataset_dirs["development"] / "manifest.json").read_bytes()
+        ).hexdigest(),
+        sha256(
+            (dataset_dirs["public_validation"] / "manifest.json").read_bytes()
+        ).hexdigest(),
+    ]
+
+
+def test_failed_case_is_recorded_with_safe_code_and_next_case_runs(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    calls = 0
+
+    def run(self: object, request: object, catalog: object) -> RunResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return RunResult(
+                status="failed",
+                final_answer=None,
+                prior_tool_executions=[],
+                decision_trace=(
+                    TraceEvent(
+                        sequence=1,
+                        event_type=TraceEventType.ERROR,
+                        payload={
+                            "code": "tool_execution_error",
+                            "summary": "sensitive detail must not be copied",
+                        },
+                    ),
+                ),
+                usage=None,
+            )
+        return RunResult(
+            status="completed",
+            final_answer="完成",
+            prior_tool_executions=[],
+            decision_trace=(),
+            usage=None,
+        )
+
+    monkeypatch.setattr("app.experiments.baseline_v1.AgentRunner.run", run)
+
+    published = BaselineBatchRunner().run(
+        bundle,
+        _dataset_mapping(bundle, dataset_dirs),
+        tmp_path,
+    )
+    verified = verify_published_run(published)
+
+    assert calls == 4
+    assert verified.records[0].status == "failed"
+    assert verified.records[0].error_code == "tool_execution_error"
+    assert verified.records[0].final_answer is None
+    assert verified.records[1].status == "completed"
+    artifact_text = (published / "case_runs.jsonl").read_text(encoding="utf-8")
+    assert "sensitive detail" not in artifact_text
+
+
+def test_catalog_as_of_date_uses_fact_table_maxima_and_requires_equality(
+    dataset_dirs: dict[str, Path],
+) -> None:
+    with open_dataset(dataset_dirs["development"]) as catalog:
+        assert catalog_as_of_date(catalog) == date(2026, 4, 30)
+        catalog.execute(
+            "select max(order_date), date '2026-04-29', date '2026-04-30' "
+            "from orders"
+        )
+        original_fetchone = catalog.fetchone
+        with mock.patch.object(
+            catalog,
+            "fetchone",
+            return_value=original_fetchone()[:1]
+            + (date(2026, 4, 29), date(2026, 4, 30)),
+        ):
+            with pytest.raises(RunLevelError) as exc_info:
+                catalog_as_of_date(catalog)
+    assert exc_info.value.code == "dataset_date_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("mapping", "dataset_mapping_error"),
+        ("catalog", "catalog_open_error"),
+        ("catalog_identity", "dataset_identity_mismatch"),
+        ("dataset_drift", "dataset_identity_drift"),
+        ("policy_drift", "policy_identity_drift"),
+    ],
+)
+def test_run_level_errors_never_publish(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected_code: str,
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    mapping = _dataset_mapping(bundle, dataset_dirs)
+    if failure == "mapping":
+        mapping.pop(next(iter(mapping)))
+    elif failure == "catalog":
+        mapping[next(iter(mapping))] = tmp_path / "missing"
+    elif failure == "catalog_identity":
+        development_id = bundle.manifest.datasets["development"].dataset_id
+        public_validation_id = (
+            bundle.manifest.datasets["public_validation"].dataset_id
+        )
+        mapping[development_id], mapping[public_validation_id] = (
+            mapping[public_validation_id],
+            mapping[development_id],
+        )
+    elif failure == "dataset_drift":
+        identities = iter(
+            [
+                (
+                    ("a" * 16, "1" * 64, "a" * 64),
+                    ("b" * 16, "2" * 64, "b" * 64),
+                ),
+                (
+                    ("a" * 16, "1" * 64, "a" * 64),
+                    ("b" * 16, "2" * 64, "c" * 64),
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            "app.experiments.baseline_v1.dataset_source_identity",
+            lambda paths: next(identities),
+        )
+    else:
+        identities = iter([("a" * 64, ("a.py",)), ("b" * 64, ("a.py",))])
+        monkeypatch.setattr(
+            "app.experiments.baseline_v1.policy_source_identity",
+            lambda: next(identities),
+        )
+
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner().run(bundle, mapping, tmp_path / "outputs")
+
+    assert exc_info.value.code == expected_code
+    publish.assert_not_called()
+    assert not (tmp_path / "outputs").exists()
