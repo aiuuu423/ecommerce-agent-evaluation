@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import tempfile
 from collections import Counter
@@ -8,6 +9,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Literal
 
+from filelock import FileLock
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -37,6 +39,42 @@ _TASK_NAMES = {
     "products_to_watch",
     "gmv_diagnosis",
 }
+_FORBIDDEN_TRACE_KEY_PARTS = {
+    "gold",
+    "expected",
+    "score",
+    "accuracy",
+    "task_success",
+    "hallucination",
+    "significance",
+    "latency",
+    "cost",
+}
+_PUBLISH_LOCK_NAME = ".artifact-publish.lock"
+
+
+def _normalized_key(key: str) -> str:
+    snake_case = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()
+    parts = tuple(part for part in re.split(r"[^a-z0-9]+", snake_case) if part)
+    return f"_{'_'.join(parts)}_"
+
+
+def _reject_forbidden_trace_keys(value: object, path: str) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if type(key) is not str:
+                raise ValueError(f"{path}: trace object keys must be strings")
+            normalized_key = _normalized_key(key)
+            if any(
+                f"_{forbidden}_" in normalized_key
+                for forbidden in _FORBIDDEN_TRACE_KEY_PARTS
+            ):
+                raise ValueError(f"{path}.{key}: forbidden trace payload field")
+            _reject_forbidden_trace_keys(item, f"{path}.{key}")
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for index, item in enumerate(value):
+            _reject_forbidden_trace_keys(item, f"{path}[{index}]")
 
 
 class ArtifactModel(BaseModel):
@@ -72,6 +110,11 @@ class CaseRunRecord(ArtifactModel):
                 raise ValueError("completed records cannot contain error_code")
         elif self.final_answer is not None or self.error_code is None:
             raise ValueError("failed records require error_code and no final_answer")
+        for index, event in enumerate(self.decision_trace):
+            _reject_forbidden_trace_keys(
+                event.payload,
+                f"decision_trace[{index}].payload",
+            )
         return self
 
 
@@ -99,7 +142,7 @@ class RunSummary(ArtifactModel):
     split_status_counts: SplitRunStatusCounts
     first_case_id: str | None = Field(default=None, pattern=r"^CASE_[0-9]{3}$")
     last_case_id: str | None = Field(default=None, pattern=r"^CASE_[0-9]{3}$")
-    published: bool
+    published: Literal[True]
     evaluation_status: EvaluationStatus
 
     @model_validator(mode="after")
@@ -318,6 +361,8 @@ def _validate_summary_against_records(
     summary: RunSummary,
     records: Sequence[CaseRunRecord],
 ) -> None:
+    if summary.published is not True:
+        raise ValueError("published summary must set published to true")
     statuses = Counter(record.status for record in records)
     splits = Counter(record.split for record in records)
     split_statuses = Counter((record.split, record.status) for record in records)
@@ -434,8 +479,6 @@ class ArtifactWriter:
         )
         self.output_root.mkdir(parents=True, exist_ok=True)
         final_dir = self.output_root / validated.manifest.run_id
-        if final_dir.exists():
-            raise FileExistsError(f"run already exists: {validated.manifest.run_id}")
 
         temporary_dir = Path(
             tempfile.mkdtemp(
@@ -466,9 +509,12 @@ class ArtifactWriter:
                 canonical_json_bytes(published_manifest),
             )
             verify_published_run(temporary_dir)
-            if final_dir.exists():
-                raise FileExistsError(f"run already exists: {validated.manifest.run_id}")
-            temporary_dir.replace(final_dir)
+            with FileLock(self.output_root / _PUBLISH_LOCK_NAME):
+                if final_dir.exists() or final_dir.is_symlink():
+                    raise FileExistsError(
+                        f"run already exists: {validated.manifest.run_id}"
+                    )
+                temporary_dir.replace(final_dir)
             return final_dir
         finally:
             if temporary_dir.exists():

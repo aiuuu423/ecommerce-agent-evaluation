@@ -1,8 +1,10 @@
 import json
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
+from threading import Barrier
 from unittest import mock
 
 import pytest
@@ -125,6 +127,49 @@ def test_case_run_record_rejects_forbidden_and_unknown_fields(forbidden: str) ->
         CaseRunRecord.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "gold_metrics",
+        "expectedToolCalls",
+        "score",
+        "accuracy",
+        "task_success",
+        "taskSuccessRate",
+        "hallucination_rate",
+        "statistical_significance",
+        "latency_ms",
+        "total_cost",
+    ],
+)
+def test_case_run_record_rejects_forbidden_keys_nested_in_trace_payload(
+    forbidden: str,
+) -> None:
+    payload = record(1, "CASE_001").model_dump(mode="json")
+    payload["decision_trace"] = [
+        {
+            "sequence": 1,
+            "event_type": "tool_result",
+            "payload": {
+                "outer": [
+                    {"safe": {"items": [{"value": 1}, {forbidden: 2}]}}
+                ]
+            },
+        }
+    ]
+
+    with pytest.raises(ValidationError, match="forbidden trace payload field"):
+        CaseRunRecord.model_validate_json(json.dumps(payload), strict=True)
+
+
+def test_summary_rejects_published_false() -> None:
+    payload = summary().model_dump(mode="python")
+    payload["published"] = False
+
+    with pytest.raises(ValidationError):
+        RunSummary.model_validate(payload, strict=True)
+
+
 def test_all_artifact_models_are_strict_and_reject_non_finite_numbers() -> None:
     with pytest.raises(ValidationError):
         RunSummary.model_validate({**summary().model_dump(), "accuracy": 1})
@@ -165,6 +210,38 @@ def test_publish_rejects_existing_target_without_overwriting(tmp_path: Path) -> 
         ArtifactWriter(tmp_path).publish(bundle())
 
     assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_concurrent_publishers_never_overwrite_same_target(tmp_path: Path) -> None:
+    ready = Barrier(2)
+    original_verify = verify_published_run
+
+    def synchronize_temporary_verification(path: Path):
+        if path.name.startswith(".baseline-v1__test.tmp-"):
+            ready.wait(timeout=5)
+        return original_verify(path)
+
+    def publish() -> Path:
+        return ArtifactWriter(tmp_path).publish(bundle())
+
+    with mock.patch(
+        "app.experiments.artifacts.verify_published_run",
+        side_effect=synchronize_temporary_verification,
+    ):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(publish) for _ in range(2)]
+            outcomes = []
+            for future in futures:
+                try:
+                    outcomes.append(future.result(timeout=10))
+                except Exception as exc:
+                    outcomes.append(exc)
+
+    assert sum(isinstance(item, Path) for item in outcomes) == 1
+    assert sum(isinstance(item, FileExistsError) for item in outcomes) == 1
+    published = tmp_path / "baseline-v1__test"
+    assert original_verify(published).manifest.run_id == "baseline-v1__test"
+    assert not list(tmp_path.glob(".baseline-v1__test.tmp-*"))
 
 
 def test_publish_cleans_same_root_temporary_directory_on_failure(
@@ -232,6 +309,25 @@ def test_verify_rejects_tampered_schema_hash_or_case_order(tmp_path: Path) -> No
     case_runs.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     with pytest.raises(ValueError):
+        verify_published_run(published)
+
+
+def test_verify_rejects_published_false_even_with_matching_hash(tmp_path: Path) -> None:
+    published = ArtifactWriter(tmp_path).publish(bundle())
+    summary_path = published / "summary.json"
+    summary_payload = json.loads(summary_path.read_bytes())
+    summary_payload["published"] = False
+    summary_contents = canonical_json_bytes(summary_payload)
+    summary_path.write_bytes(summary_contents)
+
+    manifest_path = published / "run_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_bytes())
+    manifest_payload["output_files"]["summary.json"] = sha256(
+        summary_contents
+    ).hexdigest()
+    manifest_path.write_bytes(canonical_json_bytes(manifest_payload))
+
+    with pytest.raises(ValidationError):
         verify_published_run(published)
 
 
