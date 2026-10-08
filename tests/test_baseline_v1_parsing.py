@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from app.baselines.v1.parsing import parse_request
+from app.baselines.v1.parsing import _annotate_clauses, parse_request
 from app.baselines.v1.schemas import PolicyContext, TaskKind
 
 
@@ -372,6 +372,60 @@ def test_parse_request_filters_claim_lures_locally_and_keeps_action_objects(
     expected: tuple[str, ...],
 ) -> None:
     assert parse_request(text, context).product_ids == expected
+
+
+@pytest.mark.parametrize(
+    ("separator", "modifier", "replacement"),
+    [
+        ("；", "请", ""),
+        ("，", "然后请", "改为"),
+        ("。", "接下来", ""),
+        ("、", "现在请", "改为"),
+        ("\n", "再", ""),
+    ],
+)
+def test_parse_request_uses_clause_semantics_for_task_and_product_ids(
+    context: PolicyContext,
+    separator: str,
+    modifier: str,
+    replacement: str,
+) -> None:
+    text = (
+        f"不要分析P009{separator}"
+        f"{modifier}{replacement}诊断P010 GMV{separator}"
+        "不要把P001当证据"
+    )
+
+    parsed = parse_request(text, context)
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert parsed.product_ids == ("P010",)
+
+
+def test_parse_request_annotates_clause_semantics_before_interpretation() -> None:
+    clauses = _annotate_clauses(
+        "分析P002异常；不要分析这次商品异常；改为诊断P010 GMV；不要把P001当证据"
+    )
+
+    assert tuple(clause.status.value for clause in clauses) == (
+        "active",
+        "negated",
+        "replacement",
+        "disclaimer",
+    )
+
+
+@pytest.mark.parametrize("separator", ["；", "，", "。", "、", "\n"])
+def test_parse_request_keeps_active_specific_anomaly_over_negated_generic_clause(
+    context: PolicyContext,
+    separator: str,
+) -> None:
+    text = f"分析P002异常{separator}不要分析这次商品异常{separator}诊断GMV"
+
+    parsed = parse_request(text, context)
+
+    assert parsed.task is TaskKind.PRODUCT_ANOMALY
+    assert parsed.product_ids == ("P002",)
 
 
 def test_parse_request_returns_structured_unsupported_without_task_signal(
