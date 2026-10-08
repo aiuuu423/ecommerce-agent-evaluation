@@ -2,9 +2,9 @@
 
 ## Current Phase
 
-`PHASE 2 — Agent 基础能力`
+`PHASE 3 — Deterministic Baseline V1`
 
-状态：`Completed / Awaiting Review`
+状态：`Design Approved / Implementation Planned`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Validation 数据快照与
 100 个冻结 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases）；三个 Makefile
@@ -12,7 +12,9 @@ Phase 1 目标统一委托单一 CLI，并从配置的 `dataset_version` 动态�
 公开 `build-phase1` 与 `phase2-smoke` 入口。快照身份绑定生成器源码，跨平台文件锁与只读
 数据探索 Notebook 已完成真实执行验证。Phase 2 已完成五个受控工具、Tool Registry、
 Deterministic/OpenAI-compatible 双 adapter、通用 Runner、结构化 decision trace 与无网络
-offline smoke；Real LLM 与 V1/V2 实验仍为 `Pending / Not Run`。
+offline smoke。Phase 3 已确认以 Deterministic V1 对全部 100 Cases 建立正式离线
+Baseline，并完成设计文档与原子化实施计划；代码、正式运行和 Artifact 尚未执行，
+Baseline Experiment 仍为 `Pending / Not Run`。
 
 ## Completed
 
@@ -63,11 +65,16 @@ offline smoke；Real LLM 与 V1/V2 实验仍为 `Pending / Not Run`。
   `query_sales → calculate_metrics → final answer`。
 - [x] 通过 Phase 1 冻结资产门禁，确认 16 个冻结资产、Dataset IDs、Case Set ID、
   manifests、baseline 与工具契约未漂移。
+- [x] 确认 Phase 3 使用 Deterministic V1 运行全部 100 Cases，不调用真实 LLM。
+- [x] 冻结 Baseline V1 的最小输入边界、五类路由、固定工具链和无评分 Artifact 协议。
+- [x] 创建 Phase 3 设计文档与原子化实施计划。
 
 ## Pending
 
-- [ ] 用户审阅 Phase 2 实现与验证证据。
-- [ ] 审阅通过后进入 Phase 3；在此之前不宣称已运行 V1/V2 或获得评测结果。
+- [ ] 按 Phase 3 实施计划完成 Baseline V1 策略、Case Loader、Batch Runner 与
+  Artifact Writer。
+- [ ] 通过测试和冻结资产门禁后，正式运行全部 100 Cases 并发布不可变 Artifact。
+- [ ] 正式运行前不宣称已运行 V1/V2 或获得评测结果。
 - [ ] 选择真实 LLM provider/model 与预算后，另行运行真实模型验证。
 
 ## Evaluation Results
@@ -158,4 +165,5 @@ offline smoke；Real LLM 与 V1/V2 实验仍为 `Pending / Not Run`。
 
 ## Next Step
 
-等待用户审阅 Phase 2 实现与验证证据；审阅通过后进入 Phase 3。
+按 `docs/superpowers/plans/2026-10-08-phase-3-deterministic-baseline-v1.md`
+实施 Phase 3；完成验证门禁后再运行正式 100 Cases Baseline。
