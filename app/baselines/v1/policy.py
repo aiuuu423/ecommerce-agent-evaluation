@@ -1,6 +1,7 @@
 from app.llm.schemas import AdapterRequest, AssistantAction, ToolCall
-from app.tools.schemas import GroupBy, PriorToolExecution
+from app.tools.schemas import GroupBy
 
+from .answers import render_final_answer
 from .config import METRICS, TOOL_PATHS
 from .parsing import parse_request
 from .schemas import ExecutionPlan, ParsedRequest, PolicyContext, TaskKind, ToolStep
@@ -49,7 +50,7 @@ class BaselinePolicyV1:
             index = len(actual_names)
             return self._action_for(self._plan.steps[index], index)
         return AssistantAction(
-            final_answer=self._render_final_answer(
+            final_answer=render_final_answer(
                 self._parsed,
                 request.prior_tool_executions,
             )
@@ -112,14 +113,4 @@ class BaselinePolicyV1:
                     arguments=arguments,
                 )
             ]
-        )
-
-    @staticmethod
-    def _render_final_answer(
-        parsed: ParsedRequest,
-        executions: list[PriorToolExecution],
-    ) -> str:
-        return (
-            f"{parsed.task.value} 工具链执行完成，"
-            f"共获得 {len(executions)} 项工具结果。"
         )
