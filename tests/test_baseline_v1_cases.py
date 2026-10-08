@@ -1,5 +1,6 @@
 import hashlib
 import json
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from types import MappingProxyType
@@ -8,7 +9,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.data.manifest import manifest_id
-from app.experiments.cases import RunnableCase, load_runnable_cases
+from app.experiments.cases import (
+    CaseBundle,
+    EvaluationCaseManifest,
+    RunnableCase,
+    load_runnable_cases,
+)
 
 ROOT = Path(__file__).parents[1]
 FROZEN_CASE_DIR = ROOT / "data/evaluation_cases/v1"
@@ -66,6 +72,14 @@ def _write_case_dir(
         encoding="utf-8",
     )
     return destination
+
+
+def _replace_jsonl_contents(case_dir: Path, contents: bytes) -> None:
+    (case_dir / "cases.jsonl").write_bytes(contents)
+    manifest_path = case_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["jsonl_sha256"] = hashlib.sha256(contents).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 @pytest.fixture
@@ -154,8 +168,27 @@ def test_case_bundle_deeply_freezes_manifest_mappings_and_serializes_canonically
     with pytest.raises(TypeError):
         manifest.split_strategy["nested"]["levels"][0] = {"enabled": False}
 
-    serialized = manifest.model_dump(mode="json")
-    assert serialized == source_manifest
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        python_dump = manifest.model_dump()
+        json_dump = manifest.model_dump(mode="json")
+        json_text = manifest.model_dump_json()
+        manifest_copy = EvaluationCaseManifest.model_validate(python_dump, strict=True)
+        manifest_json_copy = EvaluationCaseManifest.model_validate_json(
+            json_text,
+            strict=True,
+        )
+        bundle_copy = CaseBundle.model_validate(bundle.model_dump(), strict=True)
+
+    assert isinstance(python_dump["split_strategy"], MappingProxyType)
+    assert isinstance(
+        python_dump["split_strategy"]["nested"]["levels"],
+        tuple,
+    )
+    assert json_dump == source_manifest
+    assert manifest_copy.model_dump(mode="json") == source_manifest
+    assert manifest_json_copy.model_dump(mode="json") == source_manifest
+    assert bundle_copy.model_dump(mode="json") == bundle.model_dump(mode="json")
     canonical = json.dumps(
         bundle.model_dump(mode="json"),
         ensure_ascii=False,
@@ -248,6 +281,156 @@ def test_load_runnable_cases_rejects_dataset_mapping_mismatch(
 
     with pytest.raises(ValueError, match="dataset mapping"):
         load_runnable_cases(case_dir)
+
+
+@pytest.mark.parametrize(
+    ("manifest_field", "replacement", "error"),
+    [
+        ("case_schema_version", "9.9", "case version"),
+        ("tool_contract.version", "9.9", "tool contract"),
+        ("tool_contract.sha256", "0" * 64, "tool contract"),
+    ],
+)
+def test_load_runnable_cases_rejects_per_case_contract_mismatch(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+    manifest_field: str,
+    replacement: str,
+    error: str,
+) -> None:
+    def mutate_manifest(manifest: dict[str, object]) -> None:
+        if "." not in manifest_field:
+            manifest[manifest_field] = replacement
+            return
+        parent, child = manifest_field.split(".")
+        nested = manifest[parent]
+        assert isinstance(nested, dict)
+        nested[child] = replacement
+
+    case_dir = _write_case_dir(
+        tmp_path / "cases",
+        two_source_cases,
+        mutate_manifest=mutate_manifest,
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_runnable_cases(case_dir)
+
+
+@pytest.mark.parametrize(
+    ("count_field", "error"),
+    [
+        ("business_task_counts", "business task counts"),
+        ("capability_counts", "capability counts"),
+        ("difficulty_counts", "difficulty counts"),
+    ],
+)
+def test_load_runnable_cases_recomputes_manifest_distribution_counts(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+    count_field: str,
+    error: str,
+) -> None:
+    def mutate_manifest(manifest: dict[str, object]) -> None:
+        counts = manifest[count_field]
+        assert isinstance(counts, dict)
+        first_key = next(iter(counts))
+        counts[first_key] += 1
+
+    case_dir = _write_case_dir(
+        tmp_path / "cases",
+        two_source_cases,
+        mutate_manifest=mutate_manifest,
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_runnable_cases(case_dir)
+
+
+def test_load_runnable_cases_accepts_crlf_jsonl(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+) -> None:
+    case_dir = _write_case_dir(tmp_path / "cases", two_source_cases)
+    contents = (case_dir / "cases.jsonl").read_bytes().replace(b"\n", b"\r\n")
+    _replace_jsonl_contents(case_dir, contents)
+
+    bundle = load_runnable_cases(case_dir)
+
+    assert len(bundle.cases) == 2
+
+
+@pytest.mark.parametrize(
+    ("mutate_contents", "error"),
+    [
+        (lambda contents: contents.replace(b"\n", b"\r", 1), "bare CR"),
+        (lambda contents: contents.replace(b"\n", b"\n\n", 1), "empty"),
+        (
+            lambda contents: b"[]\n" + contents.split(b"\n", 1)[1],
+            "JSON object",
+        ),
+        (
+            lambda contents: b'{"case_id":"CASE_999",'
+            + contents.removeprefix(b"{"),
+            "duplicate key",
+        ),
+    ],
+)
+def test_load_runnable_cases_rejects_invalid_jsonl_records(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+    mutate_contents: Callable[[bytes], bytes],
+    error: str,
+) -> None:
+    case_dir = _write_case_dir(tmp_path / "cases", two_source_cases)
+    contents = mutate_contents((case_dir / "cases.jsonl").read_bytes())
+    _replace_jsonl_contents(case_dir, contents)
+
+    with pytest.raises(ValueError, match=error):
+        load_runnable_cases(case_dir)
+
+
+@pytest.mark.parametrize("file_name", ["manifest.json", "cases.jsonl"])
+def test_load_runnable_cases_rejects_symlinked_files(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+    file_name: str,
+) -> None:
+    case_dir = _write_case_dir(tmp_path / "cases", two_source_cases)
+    source = case_dir / file_name
+    target = tmp_path / f"outside-{file_name}"
+    source.replace(target)
+    source.symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        load_runnable_cases(case_dir)
+
+
+@pytest.mark.parametrize("file_name", ["manifest.json", "cases.jsonl"])
+def test_load_runnable_cases_rejects_non_regular_files(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+    file_name: str,
+) -> None:
+    case_dir = _write_case_dir(tmp_path / "cases", two_source_cases)
+    path = case_dir / file_name
+    path.unlink()
+    path.mkdir()
+
+    with pytest.raises(ValueError, match="regular file"):
+        load_runnable_cases(case_dir)
+
+
+def test_load_runnable_cases_rejects_symlinked_case_directory(
+    tmp_path: Path,
+    two_source_cases: list[dict[str, object]],
+) -> None:
+    case_dir = _write_case_dir(tmp_path / "outside", two_source_cases)
+    linked_case_dir = tmp_path / "linked"
+    linked_case_dir.symlink_to(case_dir, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        load_runnable_cases(linked_case_dir)
 
 
 def test_frozen_case_snapshot_regression() -> None:
