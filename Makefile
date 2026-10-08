@@ -4,32 +4,36 @@ PUBLIC_VALIDATION_CONFIG ?= configs/data/synthetic_public_validation_v1.yaml
 TOOL_CONTRACT ?= configs/evaluation/tool_contract_v1.yaml
 PHASE1_OUTPUT_ROOT ?= data
 PHASE2_SMOKE_DIR ?= .tmp/phase2-smoke
+PHASE3_CASE_DIR ?= data/evaluation_cases/v1
+PHASE3_DEVELOPMENT_DATASET ?= data/synthetic/v1
+PHASE3_PUBLIC_VALIDATION_DATASET ?= data/synthetic/public-validation-v1
+PHASE3_OUTPUT_ROOT ?= outputs/experiment_runs
 
-.PHONY: check-python install lock test lint phase1-data phase1-cases phase1 phase2-smoke
+.PHONY: check-python install lock test lint phase1-data phase1-cases phase1 phase2-smoke phase3-baseline
 
 check-python:
 	@command -v "$(PYTHON)" >/dev/null 2>&1 || { \
 		echo "error: PYTHON='$(PYTHON)' was not found; set PYTHON to a Python 3.11+ executable"; \
 		exit 1; \
 	}
-	@$(PYTHON) -c 'import sys; required = (3, 11); current = sys.version_info[:2]; raise SystemExit(0 if current >= required else "error: Python 3.11+ is required, but PYTHON=$(PYTHON) resolved to %s.%s" % current)'
+	@"$(PYTHON)" -c 'import sys; required = (3, 11); current = sys.version_info[:2]; raise SystemExit(0 if current >= required else "error: Python 3.11+ is required, but PYTHON=$(PYTHON) resolved to %s.%s" % current)'
 
 install: check-python
-	$(PYTHON) -m pip install --requirement requirements.lock
-	$(PYTHON) -m pip install --no-deps --editable .
+	"$(PYTHON)" -m pip install --requirement requirements.lock
+	"$(PYTHON)" -m pip install --no-deps --editable .
 
 lock: check-python
-	$(PYTHON) -m piptools compile --extra dev --strip-extras \
+	"$(PYTHON)" -m piptools compile --extra dev --strip-extras \
 		--output-file=requirements.lock pyproject.toml
 
 test: check-python
-	$(PYTHON) -m pytest
+	"$(PYTHON)" -m pytest
 
 lint: check-python
-	$(PYTHON) -m ruff check app tests notebooks
+	"$(PYTHON)" -m ruff check app tests notebooks
 
 phase1-data: check-python
-	$(PYTHON) -m app.data.phase1 \
+	"$(PYTHON)" -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
 		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
@@ -37,7 +41,7 @@ phase1-data: check-python
 		--stage data
 
 phase1-cases: check-python
-	$(PYTHON) -m app.data.phase1 \
+	"$(PYTHON)" -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
 		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
@@ -45,7 +49,7 @@ phase1-cases: check-python
 		--stage cases
 
 phase1: check-python
-	$(PYTHON) -m app.data.phase1 \
+	"$(PYTHON)" -m app.data.phase1 \
 		--development-config "$(DEVELOPMENT_CONFIG)" \
 		--public-validation-config "$(PUBLIC_VALIDATION_CONFIG)" \
 		--tool-contract "$(TOOL_CONTRACT)" \
@@ -53,6 +57,13 @@ phase1: check-python
 		--stage all
 
 phase2-smoke: check-python
-	@$(PYTHON) -m app.experiments.phase2_smoke \
+	@"$(PYTHON)" -m app.experiments.phase2_smoke \
 		--config "$(DEVELOPMENT_CONFIG)" \
 		--work-dir "$(PHASE2_SMOKE_DIR)"
+
+phase3-baseline: check-python
+	@"$(PYTHON)" -m app.experiments.baseline_v1 \
+		--case-dir "$(PHASE3_CASE_DIR)" \
+		--development-dataset "$(PHASE3_DEVELOPMENT_DATASET)" \
+		--public-validation-dataset "$(PHASE3_PUBLIC_VALIDATION_DATASET)" \
+		--output-root "$(PHASE3_OUTPUT_ROOT)"

@@ -22,3 +22,4 @@ data/evaluation_cases/*
 !data/evaluation_cases/v1/manifest.json
 data/results/*
 !data/results/.gitkeep
+outputs/experiment_runs/

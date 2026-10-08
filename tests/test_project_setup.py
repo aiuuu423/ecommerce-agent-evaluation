@@ -21,6 +21,7 @@ def test_project_metadata_declares_python_311_and_phase_1_dependencies() -> None
     assert project["scripts"] == {
         "build-phase1": "app.data.phase1:main",
         "phase2-smoke": "app.experiments.phase2_smoke:main",
+        "phase3-baseline": "app.experiments.baseline_v1:main",
     }
     assert dependency_names(project["dependencies"]) == {
         "duckdb",
@@ -93,6 +94,7 @@ def test_generated_outputs_are_ignored_but_keep_files_are_trackable() -> None:
         "data/evaluation_cases/example.jsonl",
         "data/evaluation_cases/example.manifest.json",
         "data/results/example.json",
+        "outputs/experiment_runs/example/summary.json",
     ):
         assert is_ignored(path), f"{path} should be ignored"
 

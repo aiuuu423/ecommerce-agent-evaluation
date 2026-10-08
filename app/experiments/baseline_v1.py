@@ -1,8 +1,10 @@
+import argparse
+import re
 import secrets
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from datetime import UTC, date, datetime
 from hashlib import sha256
@@ -29,10 +31,15 @@ from .artifacts import (
     RunSummary,
     RuntimeVersions,
     canonical_json_bytes,
+    verify_published_run,
 )
-from .cases import CaseBundle
+from .cases import CaseBundle, load_runnable_cases
 
 _PROJECT_ROOT = Path(__file__).parents[2]
+DEFAULT_CASE_DIR = Path("data/evaluation_cases/v1")
+DEFAULT_DEVELOPMENT_DATASET = Path("data/synthetic/v1")
+DEFAULT_PUBLIC_VALIDATION_DATASET = Path("data/synthetic/public-validation-v1")
+DEFAULT_OUTPUT_ROOT = Path("outputs/experiment_runs")
 _POLICY_SOURCE_FILES = (
     "app/baselines/v1/answers.py",
     "app/baselines/v1/config.py",
@@ -409,3 +416,70 @@ class BaselineBatchRunner:
             manifest=manifest,
         )
         return ArtifactWriter(output_root).publish(bundle)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the deterministic Phase 3 baseline"
+    )
+    parser.add_argument("--case-dir", type=Path, default=DEFAULT_CASE_DIR)
+    parser.add_argument(
+        "--development-dataset",
+        type=Path,
+        default=DEFAULT_DEVELOPMENT_DATASET,
+    )
+    parser.add_argument(
+        "--public-validation-dataset",
+        type=Path,
+        default=DEFAULT_PUBLIC_VALIDATION_DATASET,
+    )
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    return parser
+
+
+def _stderr_code(error: RunLevelError) -> str:
+    if re.fullmatch(r"[a-z][a-z0-9_]*", error.code):
+        return error.code
+    return "run_level_error"
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        try:
+            cases = load_runnable_cases(args.case_dir)
+        except (OSError, ValueError) as exc:
+            raise RunLevelError("case_load_error") from exc
+        datasets = {
+            cases.manifest.datasets[
+                "development"
+            ].dataset_id: args.development_dataset,
+            cases.manifest.datasets[
+                "public_validation"
+            ].dataset_id: args.public_validation_dataset,
+        }
+        published_path = BaselineBatchRunner().run(
+            cases,
+            datasets,
+            args.output_root,
+        )
+        published = verify_published_run(published_path)
+    except RunLevelError as exc:
+        print(_stderr_code(exc), file=sys.stderr)
+        return 1
+
+    sys.stdout.write(
+        canonical_json_bytes(
+            {
+                "run_id": published.manifest.run_id,
+                "path": str(published_path),
+                "completed": published.summary.completed,
+                "failed": published.summary.failed,
+            }
+        ).decode("utf-8")
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
