@@ -73,13 +73,19 @@ def catalog_as_of_date(catalog: Catalog) -> date:
         row = result.fetchone()
     except Exception as exc:
         raise RunLevelError("dataset_date_query_error") from exc
-    if row is None or len(row) != 3 or any(value is None for value in row):
+    if row is None:
         raise RunLevelError("dataset_date_unavailable")
-    if any(type(value) is not date for value in row):
+    try:
+        values = tuple(row)
+    except Exception:
+        raise RunLevelError("dataset_date_invalid") from None
+    if len(values) != 3 or any(value is None for value in values):
+        raise RunLevelError("dataset_date_unavailable")
+    if any(type(value) is not date for value in values):
         raise RunLevelError("dataset_date_invalid")
-    if len(set(row)) != 1:
+    if len(set(values)) != 1:
         raise RunLevelError("dataset_date_mismatch")
-    return row[0]
+    return values[0]
 
 
 def policy_source_identity() -> tuple[str, tuple[str, ...]]:

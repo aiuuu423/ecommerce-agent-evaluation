@@ -306,6 +306,14 @@ class _AsOfCatalog:
         return self.row
 
 
+class _ExplodingRow:
+    def __len__(self) -> int:
+        return 3
+
+    def __iter__(self):
+        raise RuntimeError("secret row iteration failure")
+
+
 @pytest.mark.parametrize(
     ("catalog", "expected_code"),
     [
@@ -315,6 +323,8 @@ class _AsOfCatalog:
          "dataset_date_query_error"),
         (_AsOfCatalog(None), "dataset_date_unavailable"),
         (_AsOfCatalog(()), "dataset_date_unavailable"),
+        (_AsOfCatalog(object()), "dataset_date_invalid"),
+        (_AsOfCatalog(_ExplodingRow()), "dataset_date_invalid"),
         (_AsOfCatalog(("2026-04-30",) * 3), "dataset_date_invalid"),
         (
             _AsOfCatalog(
@@ -333,6 +343,34 @@ def test_catalog_as_of_date_normalizes_all_invalid_results(
 
     assert exc_info.value.code == expected_code
     assert str(exc_info.value) == expected_code
+
+
+@pytest.mark.parametrize("row", [object(), _ExplodingRow()])
+def test_malformed_as_of_rows_never_publish(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    row: object,
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.catalog_as_of_date",
+        lambda catalog: catalog_as_of_date(_AsOfCatalog(row)),
+    )
+
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner().run(
+                bundle,
+                _dataset_mapping(bundle, dataset_dirs),
+                tmp_path / "outputs",
+            )
+
+    assert exc_info.value.code == "dataset_date_invalid"
+    assert str(exc_info.value) == "dataset_date_invalid"
+    assert exc_info.value.__cause__ is None
+    publish.assert_not_called()
+    assert not (tmp_path / "outputs").exists()
 
 
 @pytest.mark.parametrize(
