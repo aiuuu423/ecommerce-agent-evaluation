@@ -14,9 +14,14 @@ from .config import (
 from .schemas import DateWindows, ParsedRequest, PolicyContext, TaskKind
 
 _PRODUCT_ID_PATTERN = re.compile(r"(?<![A-Z0-9])P[0-9]{3}(?![A-Z0-9])", re.IGNORECASE)
+_CLAUSE_PATTERN = re.compile(r"[^,，。;；!！?？\n]+")
 _EVIDENCE_CLAIM_PATTERN = re.compile(
-    r"(?<!可)(?:核验|验证|查证)|断言|唯一(?:主因|原因)|"
-    r"(?:不要|不能|不可|别).{0,8}(?:当|作为)?证据"
+    r"断言|说法|结论|声称|据称|宣称|唯一(?:主因|原因)"
+)
+_INTENT_CHANGE_PATTERN = re.compile(r"改为|转而")
+_NEGATED_INTENT_PATTERN = re.compile(
+    r"不要|无需|无须|不必|不用|不是|并非|"
+    r"别(?:再|去|把|将|分析|检查|查看|诊断|关注|列出|给出|做|看)"
 )
 _RELATIVE_WINDOW_PATTERN = re.compile(
     r"(?P<kind>当前|最近|过去|此前|近|前)\s*(?P<days>[0-9]+)\s*天"
@@ -44,17 +49,42 @@ class _UnsupportedDate(ValueError):
         super().__init__(reason)
 
 
-def _extract_product_ids(text: str) -> tuple[ProductId, ...]:
-    if _EVIDENCE_CLAIM_PATTERN.search(text):
-        return ()
+def _active_request_text(text: str) -> str:
+    active_clauses: list[str] = []
+    for match in _CLAUSE_PATTERN.finditer(text):
+        clause = match.group().strip()
+        if not clause:
+            continue
 
+        changes = list(_INTENT_CHANGE_PATTERN.finditer(clause))
+        if changes:
+            active_clauses = [clause[changes[-1].end() :]]
+            continue
+
+        contrast_index = clause.rfind("而是")
+        if contrast_index >= 0 and _NEGATED_INTENT_PATTERN.search(clause[:contrast_index]):
+            active_clauses = [clause[contrast_index + len("而是") :]]
+            continue
+
+        if _NEGATED_INTENT_PATTERN.search(clause):
+            continue
+        active_clauses.append(clause)
+
+    return "；".join(active_clauses)
+
+
+def _extract_product_ids(text: str) -> tuple[ProductId, ...]:
     seen: set[str] = set()
     product_ids: list[str] = []
-    for match in _PRODUCT_ID_PATTERN.finditer(text):
-        product_id = match.group().upper()
-        if product_id not in seen:
-            seen.add(product_id)
-            product_ids.append(product_id)
+    for clause_match in _CLAUSE_PATTERN.finditer(text):
+        clause = clause_match.group()
+        if _EVIDENCE_CLAIM_PATTERN.search(clause):
+            continue
+        for match in _PRODUCT_ID_PATTERN.finditer(clause):
+            product_id = match.group().upper()
+            if product_id not in seen:
+                seen.add(product_id)
+                product_ids.append(product_id)
     return tuple(product_ids)
 
 
@@ -214,21 +244,22 @@ def _intent_score(text: str, task: TaskKind) -> int | None:
 
 def _classify_task(text: str) -> TaskKind:
     normalized = text.casefold()
-    scored_tasks = [
-        (score, task)
-        for task in ROUTING_PRIORITY
-        if (score := _intent_score(normalized, task)) is not None
-    ]
-    if not scored_tasks:
-        return TaskKind.UNSUPPORTED
-    return max(scored_tasks, key=lambda match: match[0])[1]
+    return next(
+        (
+            task
+            for task in ROUTING_PRIORITY
+            if _intent_score(normalized, task) is not None
+        ),
+        TaskKind.UNSUPPORTED,
+    )
 
 
 def parse_request(text: str, context: PolicyContext) -> ParsedRequest:
     normalized_text = unicodedata.normalize("NFKC", text)
-    product_ids = _extract_product_ids(normalized_text)
+    active_text = _active_request_text(normalized_text)
+    product_ids = _extract_product_ids(active_text)
     try:
-        windows = _extract_windows(normalized_text, context.as_of_date)
+        windows = _extract_windows(active_text, context.as_of_date)
     except _UnsupportedDate as exc:
         return ParsedRequest(
             task=TaskKind.UNSUPPORTED,
@@ -237,7 +268,7 @@ def parse_request(text: str, context: PolicyContext) -> ParsedRequest:
             unsupported_reason=exc.reason,
         )
 
-    task = _classify_task(normalized_text)
+    task = _classify_task(active_text)
     if task is TaskKind.UNSUPPORTED:
         return ParsedRequest(
             task=task,

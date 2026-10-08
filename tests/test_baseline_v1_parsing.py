@@ -239,7 +239,6 @@ def test_parse_request_returns_structured_unsupported_for_date_underflow(
         ("查看销售额趋势", TaskKind.GMV_DIAGNOSIS),
         ("分析营收变化", TaskKind.GMV_DIAGNOSIS),
         ("复盘销售额走向及原因", TaskKind.GMV_DIAGNOSIS),
-        ("分析商品营收增减异常。", TaskKind.GMV_DIAGNOSIS),
         ("排查商品购买效率降低原因", TaskKind.CONVERSION_DECLINE),
         ("列出需要重点跟进的商品", TaskKind.PRODUCTS_TO_WATCH),
         ("下周需要关注哪些工作", TaskKind.NEXT_WEEK_PRIORITY),
@@ -267,18 +266,49 @@ def test_parse_request_uses_frozen_priority_for_multiple_signals(
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "task"),
     [
-        "分析商品营收增减异常。",
-        "分析商品营收增减异常并给出依据",
-        "商品营收增减异常分析",
+        (
+            "商品存在问题；请重点关注风险商品并详细诊断销售额变化",
+            TaskKind.PRODUCT_ANOMALY,
+        ),
+        (
+            "转化下降；下周请优先安排重点动作并诊断销售额变化",
+            TaskKind.CONVERSION_DECLINE,
+        ),
+        (
+            "下周安排动作；请重点关注风险商品并详细诊断销售额变化",
+            TaskKind.NEXT_WEEK_PRIORITY,
+        ),
+        (
+            "关注风险商品；请详细诊断销售额变化趋势",
+            TaskKind.PRODUCTS_TO_WATCH,
+        ),
     ],
 )
-def test_parse_request_scores_specific_intent_without_tail_word_rules(
+def test_parse_request_never_lets_lower_priority_score_override_frozen_priority(
     context: PolicyContext,
     text: str,
+    task: TaskKind,
 ) -> None:
-    assert parse_request(text, context).task is TaskKind.GMV_DIAGNOSIS
+    assert parse_request(text, context).task is task
+
+
+@pytest.mark.parametrize(
+    ("text", "task"),
+    [
+        ("不要分析商品异常，改为诊断 GMV 变化", TaskKind.GMV_DIAGNOSIS),
+        ("无需关注风险商品；请分析转化下降", TaskKind.CONVERSION_DECLINE),
+        ("不是查看转化下降，而是给出下周优先动作", TaskKind.NEXT_WEEK_PRIORITY),
+        ("先看商品异常，改为列出需要关注的风险商品", TaskKind.PRODUCTS_TO_WATCH),
+    ],
+)
+def test_parse_request_ignores_negated_or_replaced_task_signals(
+    context: PolicyContext,
+    text: str,
+    task: TaskKind,
+) -> None:
+    assert parse_request(text, context).task is task
 
 
 def test_parse_request_ignores_adversarial_irrelevant_identifiers(
@@ -294,19 +324,36 @@ def test_parse_request_ignores_adversarial_irrelevant_identifiers(
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "expected"),
     [
-        "不要把 P001 是异常主因的断言当证据；请分析 P002 的商品异常",
-        "核验 P003 是否为唯一主因；仅检查 P004 的购买效率",
-        "业务断言 P005 导致下滑；查看 P006 的转化表现",
-        "请验证 P007 的说法，不要当证据；再检查 P008",
+        (
+            "不要把 P001 是异常主因的断言当证据；请分析 P002 的商品异常",
+            ("P002",),
+        ),
+        (
+            "核验 P003 是否为唯一主因；仅检查 P004 的购买效率",
+            ("P004",),
+        ),
+        (
+            "业务断言 P005 导致下滑；查看 P006 的转化表现",
+            ("P006",),
+        ),
+        (
+            "请验证 P007 的说法，不要当证据；再检查 P008",
+            ("P008",),
+        ),
+        (
+            "不要分析 P009，改为检查 P010 的商品异常",
+            ("P010",),
+        ),
     ],
 )
-def test_parse_request_does_not_filter_by_any_id_in_evidence_claim_context(
+def test_parse_request_filters_claim_lures_locally_and_keeps_action_objects(
     context: PolicyContext,
     text: str,
+    expected: tuple[str, ...],
 ) -> None:
-    assert parse_request(text, context).product_ids == ()
+    assert parse_request(text, context).product_ids == expected
 
 
 def test_parse_request_returns_structured_unsupported_without_task_signal(
