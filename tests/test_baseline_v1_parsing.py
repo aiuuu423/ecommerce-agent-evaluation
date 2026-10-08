@@ -92,12 +92,25 @@ def test_parse_request_supports_relative_and_explicit_dates(
     assert parsed.windows.model_dump(mode="json") == expected
 
 
+def test_parse_request_supports_recent_366_days(context: PolicyContext) -> None:
+    parsed = parse_request("分析最近366天的 GMV 变化", context)
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert (parsed.windows.end_date - parsed.windows.start_date).days + 1 == 366
+    assert (
+        parsed.windows.comparison_end_date - parsed.windows.comparison_start_date
+    ).days + 1 == 366
+
+
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
         ("分析 2026-02-30 至 2026-03-02 的 GMV 变化", "invalid_date"),
         ("分析 2026-04-20 至 2026-04-10 的 GMV 变化", "invalid_date_order"),
         ("分析 2026-04-20 至 2026-05-01 的 GMV 变化", "date_after_as_of"),
+        ("分析最近367天的 GMV 变化", "window_too_large"),
+        ("分析最近999999999999999999999999天的 GMV 变化", "window_too_large"),
+        ("分析 2025-04-29 至 2026-04-30 的 GMV 变化", "window_too_large"),
         ("分析最近7天、2026-04-01至2026-04-10的 GMV 变化", "conflicting_dates"),
         (
             "比较 2026-04-01 至 2026-04-10 和 2026-04-11 至 2026-04-20 的 GMV 变化",
@@ -115,6 +128,30 @@ def test_parse_request_returns_structured_unsupported_for_bad_dates(
     assert parsed.task is TaskKind.UNSUPPORTED
     assert parsed.unsupported_reason == reason
     assert parsed.product_ids == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "分析最近1天的 GMV 变化",
+        "分析 0001-01-01 的 GMV 变化",
+    ],
+)
+def test_parse_request_returns_structured_unsupported_for_date_underflow(
+    text: str,
+) -> None:
+    context = PolicyContext(
+        dataset_id="e1e81533c25e03e5",
+        dataset_version="v1",
+        as_of_date=date.min,
+    )
+
+    parsed = parse_request(text, context)
+
+    assert parsed.task is TaskKind.UNSUPPORTED
+    assert parsed.unsupported_reason == "date_out_of_range"
+    assert parsed.windows.start_date == date.min
+    assert parsed.windows.end_date == date.min
 
 
 @pytest.mark.parametrize(

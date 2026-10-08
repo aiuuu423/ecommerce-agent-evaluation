@@ -1,7 +1,7 @@
 import re
 from datetime import date, timedelta
 
-from app.tools.schemas import ProductId
+from app.tools.schemas import MAX_QUERY_WINDOW_DAYS, ProductId
 
 from .config import DEFAULT_WINDOW_DAYS, ROUTING_KEYWORDS, ROUTING_PRIORITY
 from .schemas import DateWindows, ParsedRequest, PolicyContext, TaskKind
@@ -42,11 +42,17 @@ def _extract_product_ids(text: str) -> tuple[ProductId, ...]:
 
 def _windows_for_period(start_date: date, end_date: date) -> DateWindows:
     days = (end_date - start_date).days + 1
-    comparison_end_date = start_date - timedelta(days=1)
+    if days > MAX_QUERY_WINDOW_DAYS:
+        raise _UnsupportedDate("window_too_large")
+    try:
+        comparison_end_date = start_date - timedelta(days=1)
+        comparison_start_date = comparison_end_date - timedelta(days=days - 1)
+    except OverflowError as exc:
+        raise _UnsupportedDate("date_out_of_range") from exc
     return DateWindows(
         start_date=start_date,
         end_date=end_date,
-        comparison_start_date=comparison_end_date - timedelta(days=days - 1),
+        comparison_start_date=comparison_start_date,
         comparison_end_date=comparison_end_date,
     )
 
@@ -57,8 +63,25 @@ def _default_windows(
 ) -> DateWindows:
     if days < 1:
         raise ValueError("days must be positive")
-    start_date = as_of_date - timedelta(days=days - 1)
+    if days > MAX_QUERY_WINDOW_DAYS:
+        raise _UnsupportedDate("window_too_large")
+    try:
+        start_date = as_of_date - timedelta(days=days - 1)
+    except OverflowError as exc:
+        raise _UnsupportedDate("date_out_of_range") from exc
     return _windows_for_period(start_date, as_of_date)
+
+
+def _unsupported_windows(as_of_date: date) -> DateWindows:
+    try:
+        return _default_windows(as_of_date)
+    except _UnsupportedDate:
+        return DateWindows(
+            start_date=as_of_date,
+            end_date=as_of_date,
+            comparison_start_date=as_of_date,
+            comparison_end_date=as_of_date,
+        )
 
 
 def _date_from_match(match: re.Match[str], prefix: str = "") -> date:
@@ -127,7 +150,7 @@ def parse_request(text: str, context: PolicyContext) -> ParsedRequest:
         return ParsedRequest(
             task=TaskKind.UNSUPPORTED,
             product_ids=product_ids,
-            windows=_default_windows(context.as_of_date),
+            windows=_unsupported_windows(context.as_of_date),
             unsupported_reason=exc.reason,
         )
 
