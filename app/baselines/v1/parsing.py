@@ -15,13 +15,22 @@ from .schemas import DateWindows, ParsedRequest, PolicyContext, TaskKind
 
 _PRODUCT_ID_PATTERN = re.compile(r"(?<![A-Z0-9])P[0-9]{3}(?![A-Z0-9])", re.IGNORECASE)
 _CLAUSE_PATTERN = re.compile(r"[^,，。;；!！?？\n]+")
-_EVIDENCE_CLAIM_PATTERN = re.compile(
-    r"断言|说法|结论|声称|据称|宣称|唯一(?:主因|原因)"
-)
 _INTENT_CHANGE_PATTERN = re.compile(r"改为|转而")
-_NEGATED_INTENT_PATTERN = re.compile(
-    r"不要|无需|无须|不必|不用|不是|并非|"
-    r"别(?:再|去|把|将|分析|检查|查看|诊断|关注|列出|给出|做|看)"
+_DIRECT_NEGATION_PREFIX_PATTERN = re.compile(
+    r"(?:不要|无需|无须|不必|不用|并非|(?<!是)不是|别)"
+    r"\s*(?:再|要|去|把|将)?\s*"
+    r"(?:分析|检查|查看|诊断|关注|列出|给出|做|看|排查|复盘|筛选|找出|建立|建议)?"
+    r"\s*$"
+)
+_CLAIM_VERB_PATTERN = re.compile(r"(?:断言|声称|据称|宣称)\s*$")
+_VERIFY_VERB_PATTERN = re.compile(r"(?:核验|验证|核实|确认)\s*$")
+_UNIQUE_CAUSE_PATTERN = re.compile(r"^\s*(?:是|为|是否为).{0,8}唯一(?:主因|原因)")
+_CLAIMED_CAUSE_PATTERN = re.compile(
+    r"^\s*(?:是|为|是否为).{0,8}(?:主因|原因).{0,6}(?:断言|说法)"
+)
+_CLAIM_DISCLAIMER_PATTERN = re.compile(
+    r"^[\s,，;；:：]*(?:该|此)?的?(?:断言|说法).{0,8}"
+    r"(?:不要|不可|别).{0,4}(?:当|作为).{0,2}证据"
 )
 _RELATIVE_WINDOW_PATTERN = re.compile(
     r"(?P<kind>当前|最近|过去|此前|近|前)\s*(?P<days>[0-9]+)\s*天"
@@ -57,35 +66,90 @@ def _active_request_text(text: str) -> str:
             continue
 
         changes = list(_INTENT_CHANGE_PATTERN.finditer(clause))
-        if changes:
-            active_clauses = [clause[changes[-1].end() :]]
+        replacement = next(
+            (
+                clause[change.end() :].strip()
+                for change in reversed(changes)
+                if _contains_active_task_signal(clause[change.end() :])
+            ),
+            None,
+        )
+        if replacement is not None:
+            active_clauses = [replacement]
             continue
 
         contrast_index = clause.rfind("而是")
-        if contrast_index >= 0 and _NEGATED_INTENT_PATTERN.search(clause[:contrast_index]):
-            active_clauses = [clause[contrast_index + len("而是") :]]
-            continue
+        if contrast_index >= 0 and _contains_negated_task_signal(clause[:contrast_index]):
+            contrast = clause[contrast_index + len("而是") :].strip()
+            if _contains_active_task_signal(contrast):
+                active_clauses = [contrast]
+                continue
 
-        if _NEGATED_INTENT_PATTERN.search(clause):
-            continue
         active_clauses.append(clause)
 
     return "；".join(active_clauses)
 
 
+def _is_claim_lure(clause: str, match: re.Match[str]) -> bool:
+    before = clause[max(0, match.start() - 24) : match.start()]
+    after = clause[match.end() : match.end() + 24]
+    if _CLAIM_VERB_PATTERN.search(before):
+        return True
+    if _UNIQUE_CAUSE_PATTERN.search(after):
+        return True
+    if _CLAIMED_CAUSE_PATTERN.search(after):
+        return True
+    if _CLAIM_DISCLAIMER_PATTERN.search(after):
+        return True
+    if _VERIFY_VERB_PATTERN.search(before) and re.match(
+        r"^\s*(?:的?(?:断言|说法)|是否为.{0,8}(?:主因|原因))",
+        after,
+    ):
+        return True
+    return False
+
+
 def _extract_product_ids(text: str) -> tuple[ProductId, ...]:
     seen: set[str] = set()
     product_ids: list[str] = []
-    for clause_match in _CLAUSE_PATTERN.finditer(text):
-        clause = clause_match.group()
-        if _EVIDENCE_CLAIM_PATTERN.search(clause):
+    for match in _PRODUCT_ID_PATTERN.finditer(text):
+        if _is_claim_lure(text, match):
             continue
-        for match in _PRODUCT_ID_PATTERN.finditer(clause):
-            product_id = match.group().upper()
-            if product_id not in seen:
-                seen.add(product_id)
-                product_ids.append(product_id)
+        product_id = match.group().upper()
+        if product_id not in seen:
+            seen.add(product_id)
+            product_ids.append(product_id)
     return tuple(product_ids)
+
+
+def _is_directly_negated(text: str, signal_start: int) -> bool:
+    prefix = text[max(0, signal_start - 16) : signal_start]
+    return _DIRECT_NEGATION_PREFIX_PATTERN.search(prefix) is not None
+
+
+def _task_signal_pairs(
+    text: str,
+    task: TaskKind,
+) -> tuple[tuple[tuple[int, int], tuple[int, int]], ...]:
+    groups = tuple(_keyword_spans(text, group) for group in ROUTING_KEYWORDS[task])
+    if any(not matches for matches in groups):
+        return ()
+    return tuple((first, second) for first in groups[0] for second in groups[1])
+
+
+def _contains_active_task_signal(text: str) -> bool:
+    normalized = text.casefold()
+    return any(_intent_score(normalized, task) is not None for task in ROUTING_PRIORITY)
+
+
+def _contains_negated_task_signal(text: str) -> bool:
+    normalized = text.casefold()
+    return any(
+        _is_directly_negated(normalized, first[0])
+        or _is_directly_negated(normalized, second[0])
+        for task in ROUTING_PRIORITY
+        for first, second in _task_signal_pairs(normalized, task)
+    )
 
 
 def _parse_window_days(token: str) -> int:
@@ -232,11 +296,19 @@ def _minimum_group_gap(
 
 
 def _intent_score(text: str, task: TaskKind) -> int | None:
-    groups = tuple(_keyword_spans(text, group) for group in ROUTING_KEYWORDS[task])
-    if any(not matches for matches in groups):
+    active_pairs = tuple(
+        (first, second)
+        for first, second in _task_signal_pairs(text, task)
+        if not _is_directly_negated(text, first[0])
+        and not _is_directly_negated(text, second[0])
+    )
+    if not active_pairs:
         return None
-    score = len(groups)
-    gap = _minimum_group_gap(text, groups[0], groups[1])
+    score = len(ROUTING_KEYWORDS[task])
+    gap = min(
+        _minimum_group_gap(text, (first,), (second,))
+        for first, second in active_pairs
+    )
     if gap <= ROUTING_PROXIMITY_MAX_CHARS:
         score += ROUTING_PROXIMITY_BONUS + ROUTING_PROXIMITY_MAX_CHARS - gap
     return score

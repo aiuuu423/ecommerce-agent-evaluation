@@ -301,6 +301,12 @@ def test_parse_request_never_lets_lower_priority_score_override_frozen_priority(
         ("无需关注风险商品；请分析转化下降", TaskKind.CONVERSION_DECLINE),
         ("不是查看转化下降，而是给出下周优先动作", TaskKind.NEXT_WEEK_PRIORITY),
         ("先看商品异常，改为列出需要关注的风险商品", TaskKind.PRODUCTS_TO_WATCH),
+        ("是不是要分析商品异常", TaskKind.PRODUCT_ANOMALY),
+        ("数据不是空；请分析商品异常", TaskKind.PRODUCT_ANOMALY),
+        ("不要分析商品异常；请诊断 GMV 变化", TaskKind.GMV_DIAGNOSIS),
+        ("商品不是异常；请诊断 GMV 变化", TaskKind.GMV_DIAGNOSIS),
+        ("请诊断 GMV 变化；展示口径改为含税", TaskKind.GMV_DIAGNOSIS),
+        ("分析商品异常；随后转而使用新版口径", TaskKind.PRODUCT_ANOMALY),
     ],
 )
 def test_parse_request_ignores_negated_or_replaced_task_signals(
@@ -345,6 +351,18 @@ def test_parse_request_ignores_adversarial_irrelevant_identifiers(
         (
             "不要分析 P009，改为检查 P010 的商品异常",
             ("P010",),
+        ),
+        (
+            "核验 P001 是否为唯一主因；分析 P002 异常并给结论",
+            ("P002",),
+        ),
+        (
+            "分析 P002 异常并给结论",
+            ("P002",),
+        ),
+        (
+            "核验 P001；该断言不要当证据；分析 P002 异常",
+            ("P002",),
         ),
     ],
 )
