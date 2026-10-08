@@ -21,7 +21,7 @@ _REPLACEMENT_MARKER_PATTERN = re.compile(r"(?=(?:改为|转而|而是))")
 _REPLACEMENT_PREFIX_PATTERN = re.compile(r"^\s*(?:改为|转而|而是)")
 _NEGATION_TOKEN = r"(?:不要|无需|无须|不必|不用|并非|(?<!是)不是|不算|不属于|别)"
 _NEGATION_PATTERN = re.compile(_NEGATION_TOKEN)
-_ADVERSATIVE_PATTERN = re.compile(r"(?:但|但是|不过|然而)")
+_ADVERSATIVE_PATTERN = re.compile(r"(?:不过|然而|(?<!不)但是|(?<!不)但)")
 _DIRECT_NEGATED_ANALYSIS_PATTERN = re.compile(
     _NEGATION_TOKEN
     + r"\s*(?:再|先|继续)?\s*"
@@ -81,7 +81,8 @@ class _UnsupportedDate(ValueError):
 def _split_clauses(text: str) -> tuple[str, ...]:
     clauses: list[str] = []
     for segment in _CLAUSE_SEPARATOR_PATTERN.split(text):
-        clauses.extend(_REPLACEMENT_MARKER_PATTERN.split(segment))
+        for adversative_segment in _ADVERSATIVE_PATTERN.split(segment):
+            clauses.extend(_REPLACEMENT_MARKER_PATTERN.split(adversative_segment))
     return tuple(clause.strip() for clause in clauses if clause.strip())
 
 

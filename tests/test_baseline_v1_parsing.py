@@ -181,6 +181,38 @@ def test_parse_request_ignores_directly_negated_date_windows(
     assert parsed.windows.model_dump(mode="json") == expected
 
 
+@pytest.mark.parametrize("adversative", ["但", "但是", "不过", "然而"])
+@pytest.mark.parametrize(
+    ("negated_window", "active_window", "expected_start", "expected_end"),
+    [
+        ("最近7天", "最近30天", date(2026, 4, 1), date(2026, 4, 30)),
+        (
+            "2026-04-01至2026-04-07",
+            "2026-04-15至2026-04-20",
+            date(2026, 4, 15),
+            date(2026, 4, 20),
+        ),
+    ],
+)
+def test_parse_request_treats_adversatives_as_semantic_clause_boundaries(
+    context: PolicyContext,
+    adversative: str,
+    negated_window: str,
+    active_window: str,
+    expected_start: date,
+    expected_end: date,
+) -> None:
+    parsed = parse_request(
+        f"不要分析{negated_window}{adversative}请诊断{active_window} GMV",
+        context,
+    )
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert parsed.unsupported_reason is None
+    assert parsed.windows.start_date == expected_start
+    assert parsed.windows.end_date == expected_end
+
+
 def test_parse_request_does_not_treat_ordinary_negation_as_a_negated_date(
     context: PolicyContext,
 ) -> None:
