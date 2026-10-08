@@ -14,8 +14,9 @@ Phase 1 目标统一委托单一 CLI，并从配置的 `dataset_version` 动态�
 Deterministic/OpenAI-compatible 双 adapter、通用 Runner、结构化 decision trace 与无网络
 offline smoke。Phase 3 已确认以 Deterministic V1 对全部 100 Cases 建立正式离线
 Baseline，已完成最小输入隔离、固定策略、Batch Runner、不可覆盖 Artifact、CLI 与测试门禁。
-正式 Run `baseline-v1__20261008T131041Z__2be87afa` 已发布并完成 100 个 Cases；
-该 Run 未评分，Real LLM、Optimized V2 与评分仍为 `Pending / Not Run`。
+最终正式 Run `baseline-v1__20261008T133926Z__5f8a4770` 已发布并完成 100 个 Cases；
+该 Run 基于 Git commit `2ff6bca522fc957d6699df6132dffbde4ace19db`，未评分，Real LLM、
+Optimized V2 与评分仍为 `Pending / Not Run`。
 
 ## Completed
 
@@ -73,8 +74,10 @@ Baseline，已完成最小输入隔离、固定策略、Batch Runner、不可覆
   Artifact Writer；Policy 不接收业务标签、Gold、expected 或评分字段。
 - [x] 建立确定性、输入隔离、反泄漏、冻结资产和 Artifact 重读/哈希测试门禁。
 - [x] 正式运行全部 100 Cases 并发布
-  `outputs/experiment_runs/baseline-v1__20261008T131041Z__2be87afa/`；结果为
+  `outputs/experiment_runs/baseline-v1__20261008T133926Z__5f8a4770/`；结果为
   `100 completed / 0 failed`，Development/Public Validation 为 `70/30`。
+- [x] 保留旧 Run `baseline-v1__20261008T131041Z__2be87afa`，最终引用统一指向新 Run；
+  两次 Run 的 `case_runs.jsonl`、`summary.json` 与 `policy_snapshot.json` 逐字节一致。
 
 ## Pending
 
@@ -168,18 +171,21 @@ Baseline，已完成最小输入隔离、固定策略、Batch Runner、不可覆
   `gmv_change_rate=-0.022536435249076572`；环境中未提供 LLM 配置且未访问网络。
 - Phase 2 文档更新前 `git diff --check`：PASS，工作树无未提交变更。
 - Phase 3 全量测试：`python3.12 -m pytest`，
-  `843 passed, 2 warnings`。
+  `851 passed, 2 warnings`。
 - Phase 3 Ruff：`python3.12 -m ruff check app tests notebooks`，
   `All checks passed!`。
-- 正式 Run：`baseline-v1__20261008T131041Z__2be87afa`；Artifact 相对路径：
-  `outputs/experiment_runs/baseline-v1__20261008T131041Z__2be87afa/`。
+- 最终正式 Run：`baseline-v1__20261008T133926Z__5f8a4770`；Artifact 相对路径：
+  `outputs/experiment_runs/baseline-v1__20261008T133926Z__5f8a4770/`；Git commit：
+  `2ff6bca522fc957d6699df6132dffbde4ace19db`。
+- 旧 Run `baseline-v1__20261008T131041Z__2be87afa` 继续保留，但最终引用统一指向新 Run。
 - Run 结果：`100 completed / 0 failed`；Development/Public Validation：
   `70/30`；稳定错误码分布为空。
 - Run 状态：`evaluation_status=pending_not_run`；
   `usage_status=unavailable`。
+- 新旧 Run 的 `case_runs.jsonl`、`summary.json` 与 `policy_snapshot.json` 逐字节一致。
 - 正式 Artifact SHA-256：
   - `run_manifest.json`：
-    `f6562cefbe678c1404f1123c32b9a4054d8e6c4ef3e79913b792977926e26818`
+    `6f400120c218de5ffb61c8a0139ff3f9abb90904c5cd2ed0ee0bcd27b20073a3`
   - `case_runs.jsonl`：
     `da1c4f6285ceb17784d234a7583a52b937d20c3f93222576127134706e1423e3`
   - `summary.json`：

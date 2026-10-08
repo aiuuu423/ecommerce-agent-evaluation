@@ -97,9 +97,12 @@ python3.12 -m app.experiments.baseline_v1 \
 - `summary.json`：总数、completed/failed/stopped、`70/30` Split 与评测状态。
 - `policy_snapshot.json`：Deterministic V1 的冻结路由、工具路径、指标与模板配置。
 
-正式 Run `baseline-v1__20261008T131041Z__2be87afa` 已完成 `100` 个 Cases，
+最终正式 Run `baseline-v1__20261008T133926Z__5f8a4770` 基于 Git commit
+`2ff6bca522fc957d6699df6132dffbde4ace19db`，已完成 `100` 个 Cases，
 `100 completed / 0 failed`，Development/Public Validation 为 `70/30`；
-`evaluation_status=pending_not_run`、`usage_status=unavailable`。Baseline 完成不等于
+`evaluation_status=pending_not_run`、`usage_status=unavailable`。旧 Run
+`baseline-v1__20261008T131041Z__2be87afa` 继续保留，但最终引用统一指向新 Run；两次 Run 的
+`case_runs.jsonl`、`summary.json` 与 `policy_snapshot.json` 逐字节一致。Baseline 完成不等于
 评分完成；Real LLM、Optimized V2 与评分仍为 `Pending / Not Run`。
 
 该 Baseline 的能力边界是冻结关键词路由、有限日期表达、固定工具链和确定性模板，不进行
