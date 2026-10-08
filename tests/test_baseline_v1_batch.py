@@ -1,4 +1,5 @@
 import json
+import re
 from contextlib import contextmanager
 from datetime import date
 from hashlib import sha256
@@ -8,6 +9,7 @@ from unittest import mock
 import pytest
 
 from app.agents import RunResult, TraceEvent, TraceEventType
+from app.baselines.v1 import BaselinePolicyProtocolError, BaselinePolicyV1
 from app.data.database import open_dataset
 from app.data.generator import build_snapshot
 from app.experiments.artifacts import ArtifactWriter, verify_published_run
@@ -21,7 +23,9 @@ from app.experiments.cases import (
     DatasetIdentity,
     EvaluationCaseManifest,
     RunnableCase,
+    load_runnable_cases,
 )
+from app.llm import AdapterRequest
 
 ROOT = Path(__file__).parents[1]
 DEVELOPMENT_CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
@@ -29,6 +33,48 @@ PUBLIC_VALIDATION_CONFIG = (
     ROOT / "configs/data/synthetic_public_validation_v1.yaml"
 )
 SHA = "a" * 64
+STABLE_ARTIFACT_NAMES = (
+    "case_runs.jsonl",
+    "summary.json",
+    "policy_snapshot.json",
+)
+FORBIDDEN_ARTIFACT_KEYS = {
+    "business_task",
+    "primary_capability",
+    "capability_tags",
+    "difficulty",
+    "statistical_cluster_id",
+    "allowed_alternatives",
+    "metadata",
+    "expected_tool_calls",
+    "expected_behavior",
+    "gold_evidence",
+    "gold_metric_evidence",
+    "gold_metrics",
+    "reference_answer",
+    "success_criteria",
+    "score",
+    "accuracy",
+    "task_success",
+    "hallucination",
+    "significance",
+    "latency",
+    "total_cost",
+}
+CASE_RUN_KEYS = {
+    "case_id",
+    "dataset_id",
+    "dataset_version",
+    "decision_trace",
+    "error_code",
+    "final_answer",
+    "prior_tool_executions",
+    "sequence",
+    "split",
+    "status",
+    "usage",
+    "user_input",
+}
 
 
 @pytest.fixture(scope="module")
@@ -79,7 +125,7 @@ def _case_bundle(dataset_dirs: dict[str, Path]) -> CaseBundle:
         ),
         RunnableCase(
             case_id="CASE_003",
-            user_input="分析最近30天 P003 的转化下降",
+            user_input="分析最近30天 P003 商品异常",
             split="development",
             dataset_id=datasets["development"].dataset_id,
             dataset_version=datasets["development"].dataset_version,
@@ -95,7 +141,7 @@ def _case_bundle(dataset_dirs: dict[str, Path]) -> CaseBundle:
     return CaseBundle(
         manifest=EvaluationCaseManifest(
             business_task_counts={"gmv_change": 1, "products_to_watch": 1,
-                                  "conversion_decline": 1, "next_week_priorities": 1},
+                                  "product_anomaly": 1, "next_week_priorities": 1},
             capability_counts={"diagnosis": 4},
             case_count=4,
             case_schema_version="1.0",
@@ -123,6 +169,185 @@ def _dataset_mapping(
             dataset_dirs["public_validation"]
         ),
     }
+
+
+def _json_values(path: Path) -> list[object]:
+    if path.suffix == ".jsonl":
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
+    return [json.loads(path.read_text(encoding="utf-8"))]
+
+
+def _assert_no_forbidden_keys(value: object, path: str = "$") -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()
+            assert not any(
+                forbidden in normalized for forbidden in FORBIDDEN_ARTIFACT_KEYS
+            ), f"{path}.{key}"
+            _assert_no_forbidden_keys(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _assert_no_forbidden_keys(item, f"{path}[{index}]")
+
+
+def _manifest_without_run_metadata(path: Path) -> dict[str, object]:
+    payload = json.loads((path / "run_manifest.json").read_bytes())
+    for field in ("run_id", "started_at_utc", "completed_at_utc"):
+        payload.pop(field)
+    return payload
+
+
+def test_two_real_runs_are_byte_deterministic_and_leak_free(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    mapping = _dataset_mapping(bundle, dataset_dirs)
+
+    first = BaselineBatchRunner().run(bundle, mapping, tmp_path / "first")
+    second = BaselineBatchRunner().run(bundle, mapping, tmp_path / "second")
+    first_verified = verify_published_run(first)
+    second_verified = verify_published_run(second)
+
+    assert first_verified.manifest.run_id != second_verified.manifest.run_id
+    for file_name in STABLE_ARTIFACT_NAMES:
+        assert (first / file_name).read_bytes() == (second / file_name).read_bytes()
+        for value in _json_values(first / file_name):
+            _assert_no_forbidden_keys(value)
+    assert _manifest_without_run_metadata(first) == _manifest_without_run_metadata(
+        second
+    )
+
+    longest = first_verified.records[2]
+    assert [
+        execution.result.tool_name
+        for execution in longest.prior_tool_executions
+    ] == [
+        "query_product",
+        "query_sales",
+        "query_traffic",
+        "calculate_metrics",
+    ]
+    assert longest.status == "completed"
+    assert longest.usage is None
+
+    for record, source in zip(first_verified.records, bundle.cases, strict=True):
+        payload = record.model_dump(mode="json")
+        assert set(payload) == CASE_RUN_KEYS
+        assert payload["case_id"] == source.case_id
+        assert payload["user_input"] == source.user_input
+        assert payload["dataset_id"] == source.dataset_id
+        assert payload["dataset_version"] == source.dataset_version
+        assert payload["split"] == source.split
+
+
+def test_real_policy_protocol_error_is_published_as_safe_case_error(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_policy = BaselinePolicyV1
+
+    class ProtocolBreakingPolicy:
+        def __init__(self, context: object) -> None:
+            self.policy = real_policy(context)  # type: ignore[arg-type]
+
+        def __call__(self, request: AdapterRequest):
+            if not request.prior_tool_executions:
+                return self.policy(request)
+            first = request.prior_tool_executions[0]
+            mismatched_result = first.result.model_copy(
+                update={"tool_name": "query_traffic"}
+            )
+            mismatched_execution = first.model_copy(
+                update={"result": mismatched_result}
+            )
+            broken_request = request.model_copy(
+                update={"prior_tool_executions": [mismatched_execution]}
+            )
+            try:
+                return self.policy(broken_request)
+            except BaselinePolicyProtocolError:
+                raise BaselinePolicyProtocolError(
+                    "private protocol detail must not be published"
+                ) from None
+
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.BaselinePolicyV1",
+        ProtocolBreakingPolicy,
+    )
+    bundle = _case_bundle(dataset_dirs)
+
+    published = BaselineBatchRunner().run(
+        bundle,
+        _dataset_mapping(bundle, dataset_dirs),
+        tmp_path / "protocol-error",
+    )
+    verified = verify_published_run(published)
+
+    assert all(record.status == "failed" for record in verified.records)
+    assert all(record.error_code == "adapter_error" for record in verified.records)
+    assert "private protocol detail" not in (
+        published / "case_runs.jsonl"
+    ).read_text(encoding="utf-8")
+
+
+def test_frozen_100_cases_run_against_two_rebuilt_temporary_datasets(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+) -> None:
+    bundle = load_runnable_cases(ROOT / "data/evaluation_cases/v1")
+    source_cases = [
+        json.loads(line)
+        for line in (ROOT / "data/evaluation_cases/v1/cases.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+
+    published = BaselineBatchRunner().run(
+        bundle,
+        _dataset_mapping(bundle, dataset_dirs),
+        tmp_path / "dry-run",
+    )
+    verified = verify_published_run(published)
+
+    assert len(verified.records) == 100
+    assert [record.case_id for record in verified.records] == [
+        source["case_id"] for source in source_cases
+    ]
+    assert verified.summary.total == 100
+    assert verified.summary.split_counts.model_dump() == {
+        "development": 70,
+        "public_validation": 30,
+    }
+    assert verified.summary.evaluation_status == "pending_not_run"
+    assert verified.manifest.evaluation_status == "pending_not_run"
+    assert verified.manifest.usage_status == "unavailable"
+    assert all(record.usage is None for record in verified.records)
+    assert sorted(path.name for path in published.iterdir()) == [
+        "case_runs.jsonl",
+        "policy_snapshot.json",
+        "run_manifest.json",
+        "summary.json",
+    ]
+
+    for record, source in zip(verified.records, source_cases, strict=True):
+        payload = record.model_dump(mode="json")
+        assert set(payload) == CASE_RUN_KEYS
+        for field in (
+            "case_id",
+            "user_input",
+            "dataset_id",
+            "dataset_version",
+            "split",
+        ):
+            assert payload[field] == source[field]
+    for file_name in STABLE_ARTIFACT_NAMES:
+        for value in _json_values(published / file_name):
+            _assert_no_forbidden_keys(value)
 
 
 def test_batch_routes_two_catalogs_in_order_with_fresh_runtime_per_case(

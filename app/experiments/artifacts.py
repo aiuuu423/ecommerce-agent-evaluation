@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from app.agents.schemas import TraceEvent
-from app.tools.schemas import PriorToolExecution
+from app.tools.schemas import PriorToolExecution, canonical_tool_result_payload
 
 CaseSplit = Literal["development", "public_validation"]
 RunStatus = Literal["completed", "failed"]
@@ -292,6 +292,23 @@ class RunArtifactBundle(ArtifactModel):
     policy_snapshot: PolicySnapshot
     manifest: RunManifest
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_record_instances(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        records = value.get("records")
+        if not isinstance(records, Sequence):
+            return value
+        normalized = dict(value)
+        normalized["records"] = tuple(
+            _case_run_validation_payload(record)
+            if isinstance(record, CaseRunRecord)
+            else record
+            for record in records
+        )
+        return normalized
+
     @model_validator(mode="after")
     def validate_bundle(self) -> "RunArtifactBundle":
         actual_ids = tuple(record.case_id for record in self.records)
@@ -354,12 +371,65 @@ def canonical_json_bytes(model_or_mapping: object) -> bytes:
     ).encode("utf-8")
 
 
+def _case_run_base_payload(record: CaseRunRecord) -> dict[str, object]:
+    return {
+        "sequence": record.sequence,
+        "case_id": record.case_id,
+        "split": record.split,
+        "dataset_id": record.dataset_id,
+        "dataset_version": record.dataset_version,
+        "user_input": record.user_input,
+        "status": record.status,
+        "final_answer": record.final_answer,
+        "usage": None,
+        "error_code": record.error_code,
+    }
+
+
+def _case_run_json_payload(record: CaseRunRecord) -> dict[str, object]:
+    return {
+        **_case_run_base_payload(record),
+        "prior_tool_executions": tuple(
+            {
+                "call_id": execution.call_id,
+                "arguments": execution.model_dump(mode="json")["arguments"],
+                "result": canonical_tool_result_payload(execution.result),
+            }
+            for execution in record.prior_tool_executions
+        ),
+        "decision_trace": tuple(
+            event.model_dump(mode="json") for event in record.decision_trace
+        ),
+    }
+
+
+def _case_run_validation_payload(record: CaseRunRecord) -> dict[str, object]:
+    return {
+        **_case_run_base_payload(record),
+        "prior_tool_executions": record.prior_tool_executions,
+        "decision_trace": tuple(
+            {
+                "sequence": event.sequence,
+                "event_type": event.event_type,
+                "payload": event.model_dump(mode="json")["payload"],
+            }
+            for event in record.decision_trace
+        ),
+    }
+
+
 def canonical_jsonl_bytes(records: Sequence[CaseRunRecord]) -> bytes:
     validated = tuple(
-        CaseRunRecord.model_validate(record.model_dump(mode="python"), strict=True)
+        CaseRunRecord.model_validate(
+            _case_run_validation_payload(record),
+            strict=True,
+        )
         for record in records
     )
-    return b"".join(canonical_json_bytes(record) for record in validated)
+    return b"".join(
+        canonical_json_bytes(_case_run_json_payload(record))
+        for record in validated
+    )
 
 
 def _validate_summary_against_records(
@@ -428,7 +498,7 @@ def _load_records(path: Path) -> tuple[CaseRunRecord, ...]:
                 f"case_runs.jsonl line {line_number} is not valid JSON"
             ) from exc
         record = CaseRunRecord.model_validate_json(line, strict=True)
-        if canonical_json_bytes(record).rstrip(b"\n") != line:
+        if canonical_json_bytes(_case_run_json_payload(record)).rstrip(b"\n") != line:
             raise ValueError(f"case_runs.jsonl line {line_number} is not canonical")
         records.append(record)
     if tuple(record.sequence for record in records) != tuple(range(1, len(records) + 1)):
@@ -463,7 +533,7 @@ def verify_published_run(path: Path) -> PublishedRun:
         raise ValueError("policy snapshot SHA-256 does not match identity")
     _validate_summary_against_records(summary, records)
     return PublishedRun(
-        records=records,
+        records=tuple(_case_run_validation_payload(record) for record in records),
         summary=summary,
         policy_snapshot=policy,
         manifest=manifest,
@@ -478,8 +548,12 @@ class ArtifactWriter:
         path.write_bytes(contents)
 
     def publish(self, bundle: RunArtifactBundle) -> Path:
+        validation_payload = bundle.model_dump(mode="python")
+        validation_payload["records"] = tuple(
+            _case_run_validation_payload(record) for record in bundle.records
+        )
         validated = RunArtifactBundle.model_validate(
-            bundle.model_dump(mode="python"),
+            validation_payload,
             strict=True,
         )
         self.output_root.mkdir(parents=True, exist_ok=True)
