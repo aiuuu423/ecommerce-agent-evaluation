@@ -415,7 +415,10 @@ class BaselineBatchRunner:
             policy_snapshot=snapshot,
             manifest=manifest,
         )
-        return ArtifactWriter(output_root).publish(bundle)
+        try:
+            return ArtifactWriter(output_root).publish(bundle)
+        except (OSError, ValueError):
+            raise RunLevelError("artifact_publish_error") from None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -463,7 +466,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             datasets,
             args.output_root,
         )
-        published = verify_published_run(published_path)
+        try:
+            published = verify_published_run(published_path)
+        except (OSError, ValueError):
+            raise RunLevelError("artifact_verify_error") from None
     except RunLevelError as exc:
         print(_stderr_code(exc), file=sys.stderr)
         return 1

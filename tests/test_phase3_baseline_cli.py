@@ -149,6 +149,64 @@ def test_missing_input_returns_safe_error_without_creating_output(
     assert not output_root.exists()
 
 
+@pytest.mark.parametrize(
+    "verify_error",
+    [
+        PermissionError("/private/published/run"),
+        ValueError("invalid artifact at /private/published/run"),
+    ],
+)
+def test_verify_errors_emit_only_safe_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verify_error: Exception,
+) -> None:
+    published_path = tmp_path / "private" / "published-run"
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.load_runnable_cases",
+        lambda path: _case_bundle(),
+    )
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.BaselineBatchRunner.run",
+        lambda self, cases, dataset_dirs, output_root: published_path,
+    )
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.verify_published_run",
+        lambda path: (_ for _ in ()).throw(verify_error),
+    )
+
+    exit_code = main(["--output-root", str(tmp_path / "outputs")])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == "artifact_verify_error\n"
+    assert "Traceback" not in captured.err
+    assert str(tmp_path) not in captured.err
+
+
+def test_verify_programming_errors_propagate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.load_runnable_cases",
+        lambda path: _case_bundle(),
+    )
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.BaselineBatchRunner.run",
+        lambda self, cases, dataset_dirs, output_root: tmp_path / "published-run",
+    )
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.verify_published_run",
+        lambda path: (_ for _ in ()).throw(RuntimeError("programming error")),
+    )
+
+    with pytest.raises(RuntimeError, match="programming error"):
+        main([])
+
+
 def test_make_target_quotes_python_path_with_spaces(tmp_path: Path) -> None:
     python_dir = tmp_path / "Python Runtime" / "bin"
     python_dir.mkdir(parents=True)

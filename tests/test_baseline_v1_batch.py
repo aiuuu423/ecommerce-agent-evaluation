@@ -549,3 +549,76 @@ def test_run_level_errors_never_publish(
     assert exc_info.value.code == expected_code
     publish.assert_not_called()
     assert not (tmp_path / "outputs").exists()
+
+
+@pytest.mark.parametrize(
+    "publish_error",
+    [
+        PermissionError("/private/output/path"),
+        ValueError("invalid artifact at /private/output/path"),
+    ],
+)
+def test_expected_artifact_publish_errors_are_normalized_without_cause(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    publish_error: Exception,
+) -> None:
+    bundle = _case_bundle(dataset_dirs)
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.AgentRunner.run",
+        lambda self, request, catalog: RunResult(
+            status="completed",
+            final_answer="完成",
+            prior_tool_executions=[],
+            decision_trace=(),
+            usage=None,
+        ),
+    )
+    monkeypatch.setattr(
+        ArtifactWriter,
+        "publish",
+        mock.Mock(side_effect=publish_error),
+    )
+
+    with pytest.raises(RunLevelError) as exc_info:
+        BaselineBatchRunner().run(
+            bundle,
+            _dataset_mapping(bundle, dataset_dirs),
+            tmp_path / "outputs",
+        )
+
+    assert exc_info.value.code == "artifact_publish_error"
+    assert str(exc_info.value) == "artifact_publish_error"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
+
+
+def test_artifact_publish_programming_errors_propagate(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.experiments.baseline_v1.AgentRunner.run",
+        lambda self, request, catalog: RunResult(
+            status="completed",
+            final_answer="完成",
+            prior_tool_executions=[],
+            decision_trace=(),
+            usage=None,
+        ),
+    )
+    monkeypatch.setattr(
+        ArtifactWriter,
+        "publish",
+        mock.Mock(side_effect=RuntimeError("programming error")),
+    )
+    bundle = _case_bundle(dataset_dirs)
+
+    with pytest.raises(RuntimeError, match="programming error"):
+        BaselineBatchRunner().run(
+            bundle,
+            _dataset_mapping(bundle, dataset_dirs),
+            tmp_path / "outputs",
+        )
