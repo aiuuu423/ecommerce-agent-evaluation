@@ -38,6 +38,17 @@ STABLE_ARTIFACT_NAMES = (
     "summary.json",
     "policy_snapshot.json",
 )
+FORBIDDEN_ARTIFACT_TOKENS = (
+    "business_task",
+    "primary_capability",
+    "expected_tool_calls",
+    "gold_evidence",
+    "gold_metrics",
+    "reference_answer",
+    "success_criteria",
+    "score",
+    "accuracy",
+)
 FORBIDDEN_ARTIFACT_KEYS = {
     "business_task",
     "primary_capability",
@@ -193,6 +204,12 @@ def _assert_no_forbidden_keys(value: object, path: str = "$") -> None:
             _assert_no_forbidden_keys(item, f"{path}[{index}]")
 
 
+def _assert_no_forbidden_tokens(artifact_text: str, file_name: str) -> None:
+    lowered = artifact_text.lower()
+    for forbidden in FORBIDDEN_ARTIFACT_TOKENS:
+        assert f'"{forbidden}"' not in lowered, f"{file_name}: {forbidden}"
+
+
 def _manifest_without_run_metadata(path: Path) -> dict[str, object]:
     payload = json.loads((path / "run_manifest.json").read_bytes())
     for field in ("run_id", "started_at_utc", "completed_at_utc"):
@@ -215,6 +232,10 @@ def test_two_real_runs_are_byte_deterministic_and_leak_free(
     assert first_verified.manifest.run_id != second_verified.manifest.run_id
     for file_name in STABLE_ARTIFACT_NAMES:
         assert (first / file_name).read_bytes() == (second / file_name).read_bytes()
+        _assert_no_forbidden_tokens(
+            (first / file_name).read_text(encoding="utf-8"),
+            file_name,
+        )
         for value in _json_values(first / file_name):
             _assert_no_forbidden_keys(value)
     assert _manifest_without_run_metadata(first) == _manifest_without_run_metadata(
@@ -242,6 +263,20 @@ def test_two_real_runs_are_byte_deterministic_and_leak_free(
         assert payload["dataset_id"] == source.dataset_id
         assert payload["dataset_version"] == source.dataset_version
         assert payload["split"] == source.split
+
+
+@pytest.mark.parametrize("forbidden", FORBIDDEN_ARTIFACT_TOKENS)
+def test_raw_artifact_scan_rejects_forbidden_token_in_string_value(
+    forbidden: str,
+) -> None:
+    artifact_text = json.dumps(
+        {"final_answer": forbidden},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    with pytest.raises(AssertionError, match=forbidden):
+        _assert_no_forbidden_tokens(artifact_text, "case_runs.jsonl")
 
 
 def test_real_policy_protocol_error_is_published_as_safe_case_error(
@@ -346,6 +381,10 @@ def test_frozen_100_cases_run_against_two_rebuilt_temporary_datasets(
         ):
             assert payload[field] == source[field]
     for file_name in STABLE_ARTIFACT_NAMES:
+        _assert_no_forbidden_tokens(
+            (published / file_name).read_text(encoding="utf-8"),
+            file_name,
+        )
         for value in _json_values(published / file_name):
             _assert_no_forbidden_keys(value)
 

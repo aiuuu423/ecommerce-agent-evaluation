@@ -385,6 +385,19 @@ def test_verify_rejects_published_false_even_with_matching_hash(tmp_path: Path) 
 
 
 def test_bundle_revalidates_constructed_nested_models() -> None:
+    invalid_record = CaseRunRecord.model_construct(
+        **deepcopy(record(1, "CASE_001").model_dump())
+    )
+    object.__setattr__(invalid_record, "case_id", "invalid")
+    with pytest.raises(ValidationError):
+        RunArtifactBundle(
+            records=(invalid_record, record(2, "CASE_002")),
+            expected_case_ids=("CASE_001", "CASE_002"),
+            summary=summary(),
+            policy_snapshot=policy_snapshot(),
+            manifest=manifest(),
+        )
+
     invalid_summary = RunSummary.model_construct(**deepcopy(summary().model_dump()))
     object.__setattr__(invalid_summary, "completed", 3)
     with pytest.raises(ValidationError):

@@ -673,9 +673,16 @@ Expected: PASS。若 `.gitignore` 无修改，禁止为了匹配命令而空改�
 ## Task 9：建立端到端确定性与防泄漏门禁
 
 **Files:**
+- Modify: `app/experiments/artifacts.py`
+- Modify: `tests/test_baseline_v1_artifacts.py`
 - Modify: `tests/test_baseline_v1_batch.py`
 - Modify: `tests/test_phase3_baseline_cli.py`
 - Modify: `tests/test_phase1_frozen_assets.py` only to add Phase 3 read-only assertions if necessary
+
+真实集成门禁暴露了 Artifact 嵌套模型在 strict 二次校验时不能直接依赖通用
+`model_dump(mode="python")` 的问题。`app/experiments/artifacts.py` 的变更仅限于为
+`CaseRunRecord` 构造等价的严格校验 payload，并在写入、重读和返回边界复用；这是门禁发现的最小
+生产修复，不扩展 Artifact Schema 或 Phase 3 行为，也不改写此前提交历史。
 
 - [ ] **Step 1: 写端到端双运行测试**
 
@@ -688,7 +695,8 @@ Expected: PASS。若 `.gitignore` 无修改，禁止为了匹配命令而空改�
 
 - [ ] **Step 2: 写反泄漏扫描**
 
-扫描三个稳定 Artifact：
+保留对解析后 JSON 的递归键扫描，并同时扫描 `case_runs.jsonl`、`summary.json` 和
+`policy_snapshot.json` 的原始文本：
 
 ```python
 for forbidden in (
@@ -705,6 +713,7 @@ for forbidden in (
     assert forbidden not in artifact_text.lower()
 ```
 
+原始文本扫描必须覆盖上述全部 token，并用 token 作为字符串值的用例证明它不只检查 JSON 键。
 另断言 `case_runs.jsonl` 的每行 Case ID、user input、Dataset locator 与源 Case 一致，但没有其他
 源 Case 字段。
 
@@ -753,7 +762,9 @@ Expected: PASS，冻结资产、工具和 Runner 无回归。
 - [ ] **Step 6: 提交测试门禁**
 
 ```bash
-git add tests/test_baseline_v1_batch.py tests/test_phase3_baseline_cli.py tests/test_phase1_frozen_assets.py
+git add app/experiments/artifacts.py tests/test_baseline_v1_artifacts.py \
+  tests/test_baseline_v1_batch.py tests/test_phase3_baseline_cli.py \
+  tests/test_phase1_frozen_assets.py
 git commit -m "test(phase3): enforce deterministic leak-free baseline runs"
 ```
 
