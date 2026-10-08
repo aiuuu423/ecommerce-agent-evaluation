@@ -21,6 +21,7 @@ from app.experiments.artifacts import (
     canonical_jsonl_bytes,
     verify_published_run,
 )
+from app.tools.schemas import PRODUCT_COLUMNS, PriorToolExecution
 
 SHA = "a" * 64
 
@@ -39,6 +40,23 @@ def record(sequence: int, case_id: str) -> CaseRunRecord:
         decision_trace=(),
         usage=None,
         error_code=None,
+    )
+
+
+def prior_execution(arguments: dict[str, object]) -> PriorToolExecution:
+    return PriorToolExecution(
+        call_id="call_001",
+        arguments=arguments,
+        result={
+            "result_id": "result_0001",
+            "tool_name": "query_product",
+            "dataset_id": "0123456789abcdef",
+            "source_label": "Synthetic E-commerce Data",
+            "columns": PRODUCT_COLUMNS,
+            "rows": [],
+            "row_count": 0,
+            "warnings": [],
+        },
     )
 
 
@@ -162,6 +180,39 @@ def test_case_run_record_rejects_forbidden_keys_nested_in_trace_payload(
         CaseRunRecord.model_validate_json(json.dumps(payload), strict=True)
 
 
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "gold_metrics",
+        "expectedToolCalls",
+        "score",
+        "accuracy",
+        "task_success",
+        "taskSuccessRate",
+        "hallucination_rate",
+        "statistical_significance",
+        "latency_ms",
+        "total_cost",
+    ],
+)
+def test_case_run_record_rejects_forbidden_keys_nested_in_tool_arguments(
+    forbidden: str,
+) -> None:
+    payload = record(1, "CASE_001").model_dump(mode="python")
+    payload["prior_tool_executions"] = (
+        prior_execution(
+            {
+                "outer": [
+                    {"safe": {"items": [{"value": 1}, {forbidden: 2}]}}
+                ]
+            }
+        ).model_dump(mode="python"),
+    )
+
+    with pytest.raises(ValidationError, match="forbidden trace payload field"):
+        CaseRunRecord.model_validate(payload, strict=True)
+
+
 def test_summary_rejects_published_false() -> None:
     payload = summary().model_dump(mode="python")
     payload["published"] = False
@@ -206,10 +257,12 @@ def test_publish_rejects_existing_target_without_overwriting(tmp_path: Path) -> 
     marker = target / "keep.txt"
     marker.write_text("keep", encoding="utf-8")
 
-    with pytest.raises(FileExistsError):
-        ArtifactWriter(tmp_path).publish(bundle())
+    with mock.patch("app.experiments.artifacts.tempfile.mkdtemp") as make_temporary:
+        with pytest.raises(FileExistsError):
+            ArtifactWriter(tmp_path).publish(bundle())
 
     assert marker.read_text(encoding="utf-8") == "keep"
+    make_temporary.assert_not_called()
 
 
 def test_concurrent_publishers_never_overwrite_same_target(tmp_path: Path) -> None:

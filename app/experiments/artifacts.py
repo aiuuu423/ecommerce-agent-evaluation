@@ -110,6 +110,11 @@ class CaseRunRecord(ArtifactModel):
                 raise ValueError("completed records cannot contain error_code")
         elif self.final_answer is not None or self.error_code is None:
             raise ValueError("failed records require error_code and no final_answer")
+        for index, execution in enumerate(self.prior_tool_executions):
+            _reject_forbidden_trace_keys(
+                execution.arguments,
+                f"prior_tool_executions[{index}].arguments",
+            )
         for index, event in enumerate(self.decision_trace):
             _reject_forbidden_trace_keys(
                 event.payload,
@@ -479,6 +484,8 @@ class ArtifactWriter:
         )
         self.output_root.mkdir(parents=True, exist_ok=True)
         final_dir = self.output_root / validated.manifest.run_id
+        if final_dir.exists() or final_dir.is_symlink():
+            raise FileExistsError(f"run already exists: {validated.manifest.run_id}")
 
         temporary_dir = Path(
             tempfile.mkdtemp(
