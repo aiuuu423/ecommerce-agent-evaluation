@@ -1,6 +1,8 @@
 import json
+import os
 import re
 import shutil
+import stat
 import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -471,20 +473,18 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON number: {value}")
 
 
-def _load_json(path: Path, model: type[BaseModel]) -> BaseModel:
-    contents = path.read_bytes()
+def _load_json(contents: bytes, file_name: str, model: type[BaseModel]) -> BaseModel:
     try:
         json.loads(contents, parse_constant=_reject_constant)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{path.name} is not valid UTF-8 JSON") from exc
+        raise ValueError(f"{file_name} is not valid UTF-8 JSON") from exc
     validated = model.model_validate_json(contents, strict=True)
     if canonical_json_bytes(validated) != contents:
-        raise ValueError(f"{path.name} is not canonical JSON")
+        raise ValueError(f"{file_name} is not canonical JSON")
     return validated
 
 
-def _load_records(path: Path) -> tuple[CaseRunRecord, ...]:
-    contents = path.read_bytes()
+def _load_records(contents: bytes) -> tuple[CaseRunRecord, ...]:
     if contents and not contents.endswith(b"\n"):
         raise ValueError("case_runs.jsonl must end with a newline")
     records: list[CaseRunRecord] = []
@@ -508,26 +508,89 @@ def _load_records(path: Path) -> tuple[CaseRunRecord, ...]:
     return tuple(records)
 
 
-def verify_published_run(path: Path) -> PublishedRun:
-    if not path.is_dir() or path.is_symlink():
-        raise ValueError("published run must be a non-symlink directory")
-    expected_names = _OUTPUT_FILE_NAMES | {"run_manifest.json"}
-    if {item.name for item in path.iterdir()} != expected_names:
-        raise ValueError("published run must contain exactly four artifact files")
+def _read_regular_file_at(directory_fd: int, file_name: str) -> bytes:
+    before = os.stat(file_name, dir_fd=directory_fd, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{file_name} must be a regular non-symlink file")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        file_fd = os.open(file_name, flags, dir_fd=directory_fd)
+    except OSError as exc:
+        raise ValueError(f"{file_name} must be a regular non-symlink file") from exc
+    try:
+        opened = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise ValueError(f"{file_name} must be a regular non-symlink file")
+        chunks = []
+        while chunk := os.read(file_fd, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(file_fd)
 
-    manifest = _load_json(path / "run_manifest.json", RunManifest)
-    summary = _load_json(path / "summary.json", RunSummary)
-    policy = _load_json(path / "policy_snapshot.json", PolicySnapshot)
-    records = _load_records(path / "case_runs.jsonl")
+
+def _read_artifact_directory(path: Path) -> dict[str, bytes]:
+    expected_names = _OUTPUT_FILE_NAMES | {"run_manifest.json"}
+    before = path.lstat()
+    if not stat.S_ISDIR(before.st_mode):
+        raise ValueError("published run must be a non-symlink directory")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        directory_fd = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError("published run must be a non-symlink directory") from exc
+    try:
+        opened = os.fstat(directory_fd)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise ValueError("published run must be a non-symlink directory")
+        if set(os.listdir(directory_fd)) != expected_names:
+            raise ValueError("published run must contain exactly four artifact files")
+        return {
+            file_name: _read_regular_file_at(directory_fd, file_name)
+            for file_name in expected_names
+        }
+    finally:
+        os.close(directory_fd)
+
+
+def verify_published_run(path: Path) -> PublishedRun:
+    try:
+        files = _read_artifact_directory(path)
+    except FileNotFoundError:
+        raise ValueError("published run must be a non-symlink directory") from None
+
+    manifest = _load_json(
+        files["run_manifest.json"],
+        "run_manifest.json",
+        RunManifest,
+    )
+    summary = _load_json(files["summary.json"], "summary.json", RunSummary)
+    policy = _load_json(
+        files["policy_snapshot.json"],
+        "policy_snapshot.json",
+        PolicySnapshot,
+    )
+    records = _load_records(files["case_runs.jsonl"])
     assert isinstance(manifest, RunManifest)
     assert isinstance(summary, RunSummary)
     assert isinstance(policy, PolicySnapshot)
     if manifest.output_files is None:
         raise ValueError("published manifest must contain output hashes")
     for file_name, expected_hash in manifest.output_files.root.items():
-        if sha256((path / file_name).read_bytes()).hexdigest() != expected_hash:
+        if sha256(files[file_name]).hexdigest() != expected_hash:
             raise ValueError(f"{file_name} SHA-256 does not match manifest")
-    if sha256((path / "policy_snapshot.json").read_bytes()).hexdigest() != (
+    if sha256(files["policy_snapshot.json"]).hexdigest() != (
         manifest.policy_snapshot_sha256
     ):
         raise ValueError("policy snapshot SHA-256 does not match identity")

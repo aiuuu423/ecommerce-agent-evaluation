@@ -28,11 +28,13 @@ from app.experiments.cases import (
 from app.llm import AdapterRequest
 
 ROOT = Path(__file__).parents[1]
+TOOL_CONTRACT = ROOT / "configs/evaluation/tool_contract_v1.yaml"
 DEVELOPMENT_CONFIG = ROOT / "configs/data/synthetic_v1.yaml"
 PUBLIC_VALIDATION_CONFIG = (
     ROOT / "configs/data/synthetic_public_validation_v1.yaml"
 )
 SHA = "a" * 64
+TOOL_CONTRACT_SHA256 = sha256(TOOL_CONTRACT.read_bytes()).hexdigest()
 STABLE_ARTIFACT_NAMES = (
     "case_runs.jsonl",
     "summary.json",
@@ -163,7 +165,10 @@ def _case_bundle(dataset_dirs: dict[str, Path]) -> CaseBundle:
             source_label="test cases",
             split_counts={"development": 2, "public_validation": 2},
             split_strategy={"kind": "test"},
-            tool_contract={"version": "1.0", "sha256": SHA},
+            tool_contract={
+                "version": "1.0",
+                "sha256": TOOL_CONTRACT_SHA256,
+            },
         ),
         cases=cases,
         manifest_sha256=SHA,
@@ -458,6 +463,8 @@ def test_batch_routes_two_catalogs_in_order_with_fresh_runtime_per_case(
     assert verified.manifest.runtime_versions.python
     assert verified.manifest.policy_snapshot_sha256
     assert verified.manifest.case_manifest_sha256 == bundle.manifest_sha256
+    assert verified.manifest.tool_contract_version == "1.0"
+    assert verified.manifest.tool_contract_sha256 == TOOL_CONTRACT_SHA256
     assert [item.dataset_id for item in verified.manifest.datasets] == [
         bundle.manifest.datasets["development"].dataset_id,
         bundle.manifest.datasets["public_validation"].dataset_id,
@@ -470,6 +477,107 @@ def test_batch_routes_two_catalogs_in_order_with_fresh_runtime_per_case(
             (dataset_dirs["public_validation"] / "manifest.json").read_bytes()
         ).hexdigest(),
     ]
+
+
+@pytest.mark.parametrize("field", ["version", "sha256"])
+def test_batch_rejects_case_manifest_tool_contract_drift_without_publishing(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    field: str,
+) -> None:
+    original = _case_bundle(dataset_dirs)
+    payload = original.manifest.model_dump(mode="json")
+    payload["tool_contract"][field] = "9.9" if field == "version" else "0" * 64
+    bundle = CaseBundle(
+        manifest=EvaluationCaseManifest.model_validate(payload, strict=True),
+        cases=original.cases,
+        manifest_sha256=original.manifest_sha256,
+    )
+
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner(tool_contract_path=TOOL_CONTRACT).run(
+                bundle,
+                _dataset_mapping(bundle, dataset_dirs),
+                tmp_path / "outputs",
+            )
+
+    assert exc_info.value.code == "tool_contract_identity_mismatch"
+    publish.assert_not_called()
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_batch_rejects_tool_contract_required_parameter_drift_without_publishing(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+) -> None:
+    contract = TOOL_CONTRACT.read_text(encoding="utf-8").replace(
+        "required_parameters: [product_ids]",
+        "required_parameters: [product_ids, missing_parameter]",
+        1,
+    )
+    contract_path = tmp_path / "tool_contract.yaml"
+    contract_path.write_text(contract, encoding="utf-8")
+    bundle = _case_bundle(dataset_dirs)
+    manifest_payload = bundle.manifest.model_dump(mode="json")
+    manifest_payload["tool_contract"]["sha256"] = sha256(
+        contract_path.read_bytes()
+    ).hexdigest()
+    bundle = CaseBundle(
+        manifest=EvaluationCaseManifest.model_validate(
+            manifest_payload,
+            strict=True,
+        ),
+        cases=bundle.cases,
+        manifest_sha256=bundle.manifest_sha256,
+    )
+
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner(tool_contract_path=contract_path).run(
+                bundle,
+                _dataset_mapping(bundle, dataset_dirs),
+                tmp_path / "outputs",
+            )
+
+    assert exc_info.value.code == "tool_registry_contract_drift"
+    publish.assert_not_called()
+
+
+def test_batch_rejects_tool_contract_file_drift_during_run_without_publishing(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract_path = tmp_path / "tool_contract.yaml"
+    contract_path.write_bytes(TOOL_CONTRACT.read_bytes())
+    bundle = _case_bundle(dataset_dirs)
+    calls = 0
+
+    def run(self: object, request: object, catalog: object) -> RunResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            contract_path.write_bytes(contract_path.read_bytes() + b"\n")
+        return RunResult(
+            status="completed",
+            final_answer="完成",
+            prior_tool_executions=[],
+            decision_trace=(),
+            usage=None,
+        )
+
+    monkeypatch.setattr("app.experiments.baseline_v1.AgentRunner.run", run)
+    with mock.patch.object(ArtifactWriter, "publish") as publish:
+        with pytest.raises(RunLevelError) as exc_info:
+            BaselineBatchRunner(tool_contract_path=contract_path).run(
+                bundle,
+                _dataset_mapping(bundle, dataset_dirs),
+                tmp_path / "outputs",
+            )
+
+    assert exc_info.value.code == "tool_contract_identity_drift"
+    publish.assert_not_called()
 
 
 def test_failed_case_is_recorded_with_safe_code_and_next_case_runs(

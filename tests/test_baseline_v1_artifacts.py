@@ -365,6 +365,30 @@ def test_verify_rejects_tampered_schema_hash_or_case_order(tmp_path: Path) -> No
         verify_published_run(published)
 
 
+@pytest.mark.parametrize(
+    "file_name",
+    [
+        "case_runs.jsonl",
+        "summary.json",
+        "policy_snapshot.json",
+        "run_manifest.json",
+    ],
+)
+def test_verify_rejects_symlink_for_every_artifact_file(
+    tmp_path: Path,
+    file_name: str,
+) -> None:
+    published = ArtifactWriter(tmp_path / "outputs").publish(bundle())
+    artifact = published / file_name
+    target = tmp_path / f"target-{file_name}"
+    target.write_bytes(artifact.read_bytes())
+    artifact.unlink()
+    artifact.symlink_to(target)
+
+    with pytest.raises(ValueError, match="regular non-symlink file"):
+        verify_published_run(published)
+
+
 def test_verify_rejects_published_false_even_with_matching_hash(tmp_path: Path) -> None:
     published = ArtifactWriter(tmp_path).publish(bundle())
     summary_path = published / "summary.json"

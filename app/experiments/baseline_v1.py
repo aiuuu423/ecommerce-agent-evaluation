@@ -1,15 +1,20 @@
 import argparse
+import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from hashlib import sha256
 from importlib.metadata import version
 from pathlib import Path
+
+import yaml
 
 from app.agents import AgentRunner, RunRequest, RunResult, TraceEventType
 from app.baselines.v1.config import POLICY_NAME, POLICY_VERSION, policy_snapshot
@@ -40,6 +45,7 @@ DEFAULT_CASE_DIR = Path("data/evaluation_cases/v1")
 DEFAULT_DEVELOPMENT_DATASET = Path("data/synthetic/v1")
 DEFAULT_PUBLIC_VALIDATION_DATASET = Path("data/synthetic/public-validation-v1")
 DEFAULT_OUTPUT_ROOT = Path("outputs/experiment_runs")
+DEFAULT_TOOL_CONTRACT = _PROJECT_ROOT / "configs/evaluation/tool_contract_v1.yaml"
 _POLICY_SOURCE_FILES = (
     "app/baselines/v1/answers.py",
     "app/baselines/v1/config.py",
@@ -65,6 +71,80 @@ class RunLevelError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+@dataclass(frozen=True)
+class ToolContractIdentity:
+    version: str
+    sha256: str
+    required_parameters: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+def _read_regular_file(path: Path) -> bytes:
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError("path is not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    file_fd = os.open(path, flags)
+    try:
+        opened = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise OSError("path changed while opening")
+        chunks = []
+        while chunk := os.read(file_fd, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(file_fd)
+
+
+def tool_contract_identity(path: Path) -> ToolContractIdentity:
+    try:
+        contents = _read_regular_file(path)
+        payload = yaml.safe_load(contents)
+    except (OSError, yaml.YAMLError) as exc:
+        raise RunLevelError("tool_contract_identity_error") from exc
+    if not isinstance(payload, dict):
+        raise RunLevelError("tool_contract_identity_error")
+    contract_version = payload.get("contract_version")
+    tools = payload.get("tools")
+    if not isinstance(contract_version, str) or not contract_version:
+        raise RunLevelError("tool_contract_identity_error")
+    if not isinstance(tools, dict) or not tools:
+        raise RunLevelError("tool_contract_identity_error")
+    required_parameters = []
+    for tool_name, definition in tools.items():
+        if not isinstance(tool_name, str) or not isinstance(definition, dict):
+            raise RunLevelError("tool_contract_identity_error")
+        required = definition.get("required_parameters")
+        if (
+            not isinstance(required, list)
+            or any(not isinstance(item, str) or not item for item in required)
+            or len(required) != len(set(required))
+        ):
+            raise RunLevelError("tool_contract_identity_error")
+        required_parameters.append((tool_name, tuple(required)))
+    return ToolContractIdentity(
+        version=contract_version,
+        sha256=sha256(contents).hexdigest(),
+        required_parameters=tuple(sorted(required_parameters)),
+    )
+
+
+def validate_registry_contract(contract: ToolContractIdentity) -> None:
+    registry = build_default_registry()
+    exported = {
+        item["function"]["name"]: tuple(
+            item["function"]["parameters"].get("required", ())
+        )
+        for item in registry.openai_tools()
+    }
+    expected = dict(contract.required_parameters)
+    if any(exported.get(name) != required for name, required in expected.items()):
+        raise RunLevelError("tool_registry_contract_drift")
 
 
 def catalog_as_of_date(catalog: Catalog) -> date:
@@ -220,6 +300,9 @@ def _summary(records: tuple[CaseRunRecord, ...]) -> RunSummary:
 
 
 class BaselineBatchRunner:
+    def __init__(self, tool_contract_path: Path = DEFAULT_TOOL_CONTRACT) -> None:
+        self.tool_contract_path = tool_contract_path
+
     def run(
         self,
         cases: CaseBundle,
@@ -245,6 +328,14 @@ class BaselineBatchRunner:
                 or case.dataset_version != expected.dataset_version
             ):
                 raise RunLevelError("dataset_mapping_error")
+
+        initial_tool_contract = tool_contract_identity(self.tool_contract_path)
+        if (
+            cases.manifest.tool_contract.version != initial_tool_contract.version
+            or cases.manifest.tool_contract.sha256 != initial_tool_contract.sha256
+        ):
+            raise RunLevelError("tool_contract_identity_mismatch")
+        validate_registry_contract(initial_tool_contract)
 
         started_at = _utc_now()
         snapshot = PolicySnapshot.model_validate(policy_snapshot(), strict=True)
@@ -365,6 +456,10 @@ class BaselineBatchRunner:
                 != snapshot_sha256
             ):
                 raise RunLevelError("policy_identity_drift")
+            final_tool_contract = tool_contract_identity(self.tool_contract_path)
+            if final_tool_contract != initial_tool_contract:
+                raise RunLevelError("tool_contract_identity_drift")
+            validate_registry_contract(final_tool_contract)
 
         completed_at = _utc_now()
         git_commit, git_dirty = _git_identity()
@@ -399,8 +494,8 @@ class BaselineBatchRunner:
             case_jsonl_sha256=cases.manifest.jsonl_sha256,
             case_manifest_sha256=cases.manifest_sha256,
             datasets=dataset_artifacts,
-            tool_contract_version=cases.manifest.tool_contract.version,
-            tool_contract_sha256=cases.manifest.tool_contract.sha256,
+            tool_contract_version=initial_tool_contract.version,
+            tool_contract_sha256=initial_tool_contract.sha256,
             policy_snapshot_sha256=snapshot_sha256,
             policy_source_files=initial_policy_identity[1],
             policy_source_sha256=initial_policy_identity[0],
