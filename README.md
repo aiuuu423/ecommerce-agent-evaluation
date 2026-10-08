@@ -1,7 +1,7 @@
 # 多版本 Agent 效果评测与错误归因分析
 
-当前阶段：`PHASE 2 — Completed / Awaiting Review`。Real LLM 与 Agent 实验结果仍为
-`Pending / Not Run`。
+当前阶段：`PHASE 3 — Deterministic Baseline V1 Completed / Unscored`。正式离线
+Baseline 已运行；Real LLM、Optimized V2 与评分仍为 `Pending / Not Run`。
 
 本项目使用明确标记的 Synthetic E-commerce Data 构建可复现的 Agent Evaluation 闭环。
 
@@ -48,7 +48,7 @@ python3.12 -m app.data.phase1 \
 Phase 2 提供五个受控工具（`query_product`、`query_sales`、`query_traffic`、
 `query_marketing`、`calculate_metrics`）、稳定的 Tool Registry、
 Deterministic/OpenAI-compatible 双 adapter、通用 Runner 与结构化 decision trace。
-当前尚未实现或运行 Baseline V1、Optimized V2、A/B Evaluation 或真实模型实验。
+Optimized V2、评分与真实模型实验尚未运行。
 
 无 API Key 离线验证：
 
@@ -58,11 +58,54 @@ make PYTHON=python3.12 PHASE2_SMOKE_DIR=/tmp/phase2-smoke phase2-smoke
 
 offline smoke 仅验证
 `Deterministic adapter → Runner → Registry → query_sales → calculate_metrics → final answer`
-链路；它不读取 Evaluation Cases、不评分、不生成 Phase 3 run artifact，也不代表 V1/V2
-实验结果。调用方必须在构造 `OpenAICompatibleAdapter` 时显式传入 `base_url`、`api_key`
+链路；它不读取 Evaluation Cases、不评分、不生成 Phase 3 run artifact，也不代表正式
+Baseline 或 V2 结果。调用方必须在构造 `OpenAICompatibleAdapter` 时显式传入 `base_url`、`api_key`
 和 `model`；当前没有从 `.env` 或环境变量读取这些参数并发起真实运行的 CLI、Makefile 或
 应用入口。该路径目前只通过 fake/mock transport 测试，未选择或调用真实 provider/model；
 offline smoke 不读取 `.env` 或相关环境变量，也不访问网络。
+
+## Phase 3
+
+Deterministic Baseline V1 是无网络、无真实 LLM 的固定策略基线。运行时只把 `case_id`、
+`user_input`、Dataset ID/Version 与 Split 投影到最小执行输入；业务标签、Gold、
+expected tool calls 和评分字段不会进入 Policy。每个 Case 使用独立 Policy、Adapter 与
+Runner，按冻结路由调用受控工具，并仅根据工具结果生成回答。
+
+默认对冻结的 100 个 Cases 和两套数据快照执行：
+
+```bash
+make PYTHON=python3.12 phase3-baseline
+```
+
+也可通过 `PHASE3_CASE_DIR`、`PHASE3_DEVELOPMENT_DATASET`、
+`PHASE3_PUBLIC_VALIDATION_DATASET` 与 `PHASE3_OUTPUT_ROOT` 覆盖输入和输出位置。CLI
+等价入口为：
+
+```bash
+python3.12 -m app.experiments.baseline_v1 \
+  --case-dir data/evaluation_cases/v1 \
+  --development-dataset data/synthetic/v1 \
+  --public-validation-dataset data/synthetic/public-validation-v1 \
+  --output-root outputs/experiment_runs
+```
+
+每次成功运行都会创建不可覆盖的 `outputs/experiment_runs/<run_id>/`，包含四个文件：
+
+- `run_manifest.json`：Run、Git、运行环境、Cases、数据集、工具契约、Policy 与输出文件身份。
+- `case_runs.jsonl`：按冻结顺序保存逐 Case 状态、回答、工具执行与 decision trace；`usage`
+  为 `null`。
+- `summary.json`：总数、completed/failed/stopped、`70/30` Split 与评测状态。
+- `policy_snapshot.json`：Deterministic V1 的冻结路由、工具路径、指标与模板配置。
+
+正式 Run `baseline-v1__20261008T131041Z__2be87afa` 已完成 `100` 个 Cases，
+`100 completed / 0 failed`，Development/Public Validation 为 `70/30`；
+`evaluation_status=pending_not_run`、`usage_status=unavailable`。Baseline 完成不等于
+评分完成；Real LLM、Optimized V2 与评分仍为 `Pending / Not Run`。
+
+该 Baseline 的能力边界是冻结关键词路由、有限日期表达、固定工具链和确定性模板，不进行
+开放式规划、自检、重试或因果推断；遇到不支持或数据不足的输入会显式返回限制。正式
+Artifact 保留在上述输出目录且遵循仓库现有忽略规则，身份以 `PROJECT_STATUS.md` 记录的
+SHA-256 为准。
 
 ## 数据真实性
 
@@ -92,6 +135,6 @@ offline smoke 不读取 `.env` 或相关环境变量，也不访问网络。
   用于最终确认。
 - 冻结产物的 Case Set ID 与 SHA-256 见
   `data/synthetic/phase1_sha256_baseline.json`。
-- Phase 1 不需要 API Key，尚未接入真实模型或运行 Agent。Baseline、Optimized、
-  A/B Metrics、Error Analysis、Statistical Validation、Latency 均为
-  `Pending / Not Run`，Token Usage 与 Cost 为 `Unavailable`。
+- Phase 1 不需要 API Key；Phase 3 Deterministic Baseline 已离线运行，但 Real LLM、
+  Optimized V2、评分、Error Analysis 与 Statistical Validation 仍为
+  `Pending / Not Run`，Usage 为 `Unavailable`。

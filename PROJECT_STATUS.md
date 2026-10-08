@@ -4,7 +4,7 @@
 
 `PHASE 3 — Deterministic Baseline V1`
 
-状态：`Design Approved / Implementation Planned`
+状态：`Completed / Unscored`
 
 Phase 0 设计已经用户批准。Phase 1 已完成独立 Development/Public Validation 数据快照与
 100 个冻结 Evaluation Cases / 50 个 statistical clusters（每簇 2 Cases）；三个 Makefile
@@ -13,8 +13,9 @@ Phase 1 目标统一委托单一 CLI，并从配置的 `dataset_version` 动态�
 数据探索 Notebook 已完成真实执行验证。Phase 2 已完成五个受控工具、Tool Registry、
 Deterministic/OpenAI-compatible 双 adapter、通用 Runner、结构化 decision trace 与无网络
 offline smoke。Phase 3 已确认以 Deterministic V1 对全部 100 Cases 建立正式离线
-Baseline，并完成设计文档与原子化实施计划；代码、正式运行和 Artifact 尚未执行，
-Baseline Experiment 仍为 `Pending / Not Run`。
+Baseline，已完成最小输入隔离、固定策略、Batch Runner、不可覆盖 Artifact、CLI 与测试门禁。
+正式 Run `baseline-v1__20261008T131041Z__2be87afa` 已发布并完成 100 个 Cases；
+该 Run 未评分，Real LLM、Optimized V2 与评分仍为 `Pending / Not Run`。
 
 ## Completed
 
@@ -68,14 +69,18 @@ Baseline Experiment 仍为 `Pending / Not Run`。
 - [x] 确认 Phase 3 使用 Deterministic V1 运行全部 100 Cases，不调用真实 LLM。
 - [x] 冻结 Baseline V1 的最小输入边界、五类路由、固定工具链和无评分 Artifact 协议。
 - [x] 创建 Phase 3 设计文档与原子化实施计划。
+- [x] 实现 Deterministic Baseline V1 策略、Case Loader、Batch Runner、CLI 与不可覆盖
+  Artifact Writer；Policy 不接收业务标签、Gold、expected 或评分字段。
+- [x] 建立确定性、输入隔离、反泄漏、冻结资产和 Artifact 重读/哈希测试门禁。
+- [x] 正式运行全部 100 Cases 并发布
+  `outputs/experiment_runs/baseline-v1__20261008T131041Z__2be87afa/`；结果为
+  `100 completed / 0 failed`，Development/Public Validation 为 `70/30`。
 
 ## Pending
 
-- [ ] 按 Phase 3 实施计划完成 Baseline V1 策略、Case Loader、Batch Runner 与
-  Artifact Writer。
-- [ ] 通过测试和冻结资产门禁后，正式运行全部 100 Cases 并发布不可变 Artifact。
-- [ ] 正式运行前不宣称已运行 V1/V2 或获得评测结果。
 - [ ] 选择真实 LLM provider/model 与预算后，另行运行真实模型验证。
+- [ ] 设计并冻结 Optimized V2；不得用本次无评分 Baseline 推导效果结论。
+- [ ] 实施评分、错误归因与统计验证；Baseline 完成不等于评分完成。
 
 ## Evaluation Results
 
@@ -84,14 +89,12 @@ Baseline Experiment 仍为 `Pending / Not Run`。
 | Synthetic Dataset | Completed / Validated |
 | Evaluation Dataset | Completed / Validated |
 | Real LLM | Pending / Not Run |
-| Baseline Experiment | Pending / Not Run |
+| Baseline Experiment | Completed / Unscored |
 | Optimized Experiment | Pending / Not Run |
-| A/B Metrics | Pending / Not Run |
+| Evaluation / Scoring | Pending / Not Run |
 | Error Analysis | Pending / Not Run |
 | Statistical Validation | Pending / Not Run |
-| Latency | Pending / Not Run |
-| Token Usage | Unavailable |
-| Cost | Unavailable |
+| Usage | Unavailable |
 
 ## Known Issues
 
@@ -101,8 +104,10 @@ Baseline Experiment 仍为 `Pending / Not Run`。
 - Parquet 字节一致性要求使用锁定依赖中的相同 Pandas/PyArrow 写入器版本。
 - OpenAI-compatible adapter 仅通过 fake/mock transport 测试，尚未选择或调用真实
   provider/model，Real LLM 为 `Pending / Not Run`。
-- 尚未实现或运行 Baseline V1、Optimized V2、A/B Evaluation；offline smoke 不读取
-  Evaluation Cases、不评分、不生成 Phase 3 run artifact。
+- Deterministic Baseline V1 只支持冻结关键词路由、有限日期表达、固定工具链和确定性模板；
+  不进行开放式规划、自检、重试或因果推断。
+- 正式 Baseline Artifact 未评分，不能解释为评测完成；Optimized V2、评分与错误归因仍为
+  `Pending / Not Run`。
 - Task 12 的中间提交历史曾提前加入、修正并撤回 README 内容；最终文件边界正确，但因未获
   破坏性历史改写授权，该提交历史噪声被保留，不影响运行结果。
 - LLM Judge 仅为可选扩展，当前未选择 Judge 模型。
@@ -162,8 +167,27 @@ Baseline Experiment 仍为 `Pending / Not Run`。
   `query_sales → calculate_metrics`、`trace_event_count=11`、
   `gmv_change_rate=-0.022536435249076572`；环境中未提供 LLM 配置且未访问网络。
 - Phase 2 文档更新前 `git diff --check`：PASS，工作树无未提交变更。
+- Phase 3 全量测试：`python3.12 -m pytest`，
+  `843 passed, 2 warnings`。
+- Phase 3 Ruff：`python3.12 -m ruff check app tests notebooks`，
+  `All checks passed!`。
+- 正式 Run：`baseline-v1__20261008T131041Z__2be87afa`；Artifact 相对路径：
+  `outputs/experiment_runs/baseline-v1__20261008T131041Z__2be87afa/`。
+- Run 结果：`100 completed / 0 failed`；Development/Public Validation：
+  `70/30`；稳定错误码分布为空。
+- Run 状态：`evaluation_status=pending_not_run`；
+  `usage_status=unavailable`。
+- 正式 Artifact SHA-256：
+  - `run_manifest.json`：
+    `f6562cefbe678c1404f1123c32b9a4054d8e6c4ef3e79913b792977926e26818`
+  - `case_runs.jsonl`：
+    `da1c4f6285ceb17784d234a7583a52b937d20c3f93222576127134706e1423e3`
+  - `summary.json`：
+    `78ff76fc0b63c7517d7a182690e21da78aecaace308fbe60616ef220924cba56`
+  - `policy_snapshot.json`：
+    `b31d615b9aff92c7ee573a220d1a4060d46c4653ab1d9bf7fea6921abea3ee78`
 
 ## Next Step
 
-按 `docs/superpowers/plans/2026-10-08-phase-3-deterministic-baseline-v1.md`
-实施 Phase 3；完成验证门禁后再运行正式 100 Cases Baseline。
+进入 Optimized V2 设计与冻结；Real LLM 运行和评分分别保持后续独立阶段，不能从本次
+无评分 Baseline 推导效果结论。
