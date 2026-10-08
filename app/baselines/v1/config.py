@@ -28,23 +28,23 @@ ROUTING_KEYWORDS: Mapping[TaskKind, tuple[tuple[str, ...], ...]] = MappingProxyT
     {
         TaskKind.PRODUCT_ANOMALY: (
             ("商品", "sku"),
-            ("异常", "问题", "原因"),
+            ("异常", "问题"),
         ),
         TaskKind.CONVERSION_DECLINE: (
-            ("转化", "cvr"),
-            ("下降", "下滑", "原因"),
+            ("转化", "cvr", "购买效率", "下单效率"),
+            ("下降", "下滑", "降低", "走低", "变差"),
         ),
         TaskKind.NEXT_WEEK_PRIORITY: (
             ("下周", "下一步"),
-            ("优先", "重点", "动作"),
+            ("优先", "重点", "动作", "关注", "安排"),
         ),
         TaskKind.PRODUCTS_TO_WATCH: (
-            ("关注", "预警", "风险"),
-            ("商品", "sku"),
+            ("关注", "重点", "预警", "风险", "留意", "跟进"),
+            ("商品", "产品", "sku", "对象"),
         ),
         TaskKind.GMV_DIAGNOSIS: (
             ("gmv", "销售额", "营收", "成交"),
-            ("变化", "趋势", "诊断"),
+            ("变化", "趋势", "走势", "走向", "增减", "诊断"),
         ),
     }
 )

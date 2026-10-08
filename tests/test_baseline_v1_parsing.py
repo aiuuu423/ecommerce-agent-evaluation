@@ -103,6 +103,29 @@ def test_parse_request_supports_recent_366_days(context: PolicyContext) -> None:
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "对比最近7天和前7天的销售额走向",
+        "对比前７天与最近７天的营收增减",
+    ],
+)
+def test_parse_request_accepts_matching_current_and_previous_windows(
+    context: PolicyContext,
+    text: str,
+) -> None:
+    parsed = parse_request(text, context)
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert parsed.unsupported_reason is None
+    assert parsed.windows.model_dump(mode="json") == {
+        "start_date": "2026-04-24",
+        "end_date": "2026-04-30",
+        "comparison_start_date": "2026-04-17",
+        "comparison_end_date": "2026-04-23",
+    }
+
+
+@pytest.mark.parametrize(
     ("text", "reason"),
     [
         ("分析 2026-02-30 至 2026-03-02 的 GMV 变化", "invalid_date"),
@@ -110,6 +133,7 @@ def test_parse_request_supports_recent_366_days(context: PolicyContext) -> None:
         ("分析 2026-04-20 至 2026-05-01 的 GMV 变化", "date_after_as_of"),
         ("分析最近367天的 GMV 变化", "window_too_large"),
         ("分析最近999999999999999999999999天的 GMV 变化", "window_too_large"),
+        ("对比最近7天和前8天的销售额走向", "conflicting_dates"),
         ("分析 2025-04-29 至 2026-04-30 的 GMV 变化", "window_too_large"),
         ("分析最近7天、2026-04-01至2026-04-10的 GMV 变化", "conflicting_dates"),
         (
@@ -128,6 +152,48 @@ def test_parse_request_returns_structured_unsupported_for_bad_dates(
     assert parsed.task is TaskKind.UNSUPPORTED
     assert parsed.unsupported_reason == reason
     assert parsed.product_ids == ()
+
+
+def test_parse_request_handles_arbitrarily_long_relative_window(
+    context: PolicyContext,
+) -> None:
+    text = f"分析最近{'9' * 5000}天的销售额走向"
+
+    parsed = parse_request(text, context)
+
+    assert parsed.task is TaskKind.UNSUPPORTED
+    assert parsed.unsupported_reason == "window_too_large"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "参考编号12026-04-010，分析 GMV 变化",
+        "参考编号9992026/04/01999，分析销售额走向",
+        "参考编号12026年04月010，分析营收增减",
+    ],
+)
+def test_parse_request_does_not_parse_dates_inside_longer_numbers(
+    context: PolicyContext,
+    text: str,
+) -> None:
+    parsed = parse_request(text, context)
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert parsed.windows.start_date == date(2026, 4, 1)
+    assert parsed.windows.end_date == date(2026, 4, 30)
+
+
+def test_parse_request_normalizes_fullwidth_digits(context: PolicyContext) -> None:
+    parsed = parse_request(
+        "查看 P００７ 在 ２０２６－０４－１５ 的销售额走向",
+        context,
+    )
+
+    assert parsed.task is TaskKind.GMV_DIAGNOSIS
+    assert parsed.product_ids == ("P007",)
+    assert parsed.windows.start_date == date(2026, 4, 15)
+    assert parsed.windows.end_date == date(2026, 4, 15)
 
 
 @pytest.mark.parametrize(
@@ -172,6 +238,11 @@ def test_parse_request_returns_structured_unsupported_for_date_underflow(
         ("诊断 GMV 变化", TaskKind.GMV_DIAGNOSIS),
         ("查看销售额趋势", TaskKind.GMV_DIAGNOSIS),
         ("分析营收变化", TaskKind.GMV_DIAGNOSIS),
+        ("复盘销售额走向及原因", TaskKind.GMV_DIAGNOSIS),
+        ("分析商品营收增减异常。", TaskKind.GMV_DIAGNOSIS),
+        ("排查商品购买效率降低原因", TaskKind.CONVERSION_DECLINE),
+        ("列出需要重点跟进的商品", TaskKind.PRODUCTS_TO_WATCH),
+        ("下周需要关注哪些工作", TaskKind.NEXT_WEEK_PRIORITY),
     ],
 )
 def test_parse_request_classifies_general_task_signals(
@@ -200,6 +271,27 @@ def test_parse_request_ignores_adversarial_irrelevant_identifiers(
 
     assert parsed.task is TaskKind.GMV_DIAGNOSIS
     assert parsed.product_ids == ("P007",)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "不要把 P001 是异常主因的断言当证据；请分析 P002 的商品异常",
+            ("P002",),
+        ),
+        (
+            "核验 P003 是否为唯一主因；分析全店购买效率降低",
+            (),
+        ),
+    ],
+)
+def test_parse_request_ignores_product_ids_used_only_in_evidence_claims(
+    context: PolicyContext,
+    text: str,
+    expected: tuple[str, ...],
+) -> None:
+    assert parse_request(text, context).product_ids == expected
 
 
 def test_parse_request_returns_structured_unsupported_without_task_signal(
