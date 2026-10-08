@@ -243,6 +243,11 @@ def test_parse_request_returns_structured_unsupported_for_date_underflow(
         ("排查商品购买效率降低原因", TaskKind.CONVERSION_DECLINE),
         ("列出需要重点跟进的商品", TaskKind.PRODUCTS_TO_WATCH),
         ("下周需要关注哪些工作", TaskKind.NEXT_WEEK_PRIORITY),
+        ("对照本月和上月的 GMV 表现", TaskKind.GMV_DIAGNOSIS),
+        ("筛选发生经营偏离的货品", TaskKind.PRODUCT_ANOMALY),
+        ("找出访购漏斗退步的产品", TaskKind.CONVERSION_DECLINE),
+        ("建立后续监控对象清单", TaskKind.PRODUCTS_TO_WATCH),
+        ("给出下一周期运营处置顺序", TaskKind.NEXT_WEEK_PRIORITY),
     ],
 )
 def test_parse_request_classifies_general_task_signals(
@@ -261,6 +266,21 @@ def test_parse_request_uses_frozen_priority_for_multiple_signals(
     assert parse_request(text, context).task is TaskKind.PRODUCT_ANOMALY
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "分析商品营收增减异常。",
+        "分析商品营收增减异常并给出依据",
+        "商品营收增减异常分析",
+    ],
+)
+def test_parse_request_scores_specific_intent_without_tail_word_rules(
+    context: PolicyContext,
+    text: str,
+) -> None:
+    assert parse_request(text, context).task is TaskKind.GMV_DIAGNOSIS
+
+
 def test_parse_request_ignores_adversarial_irrelevant_identifiers(
     context: PolicyContext,
 ) -> None:
@@ -274,24 +294,19 @@ def test_parse_request_ignores_adversarial_irrelevant_identifiers(
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    "text",
     [
-        (
-            "不要把 P001 是异常主因的断言当证据；请分析 P002 的商品异常",
-            ("P002",),
-        ),
-        (
-            "核验 P003 是否为唯一主因；分析全店购买效率降低",
-            (),
-        ),
+        "不要把 P001 是异常主因的断言当证据；请分析 P002 的商品异常",
+        "核验 P003 是否为唯一主因；仅检查 P004 的购买效率",
+        "业务断言 P005 导致下滑；查看 P006 的转化表现",
+        "请验证 P007 的说法，不要当证据；再检查 P008",
     ],
 )
-def test_parse_request_ignores_product_ids_used_only_in_evidence_claims(
+def test_parse_request_does_not_filter_by_any_id_in_evidence_claim_context(
     context: PolicyContext,
     text: str,
-    expected: tuple[str, ...],
 ) -> None:
-    assert parse_request(text, context).product_ids == expected
+    assert parse_request(text, context).product_ids == ()
 
 
 def test_parse_request_returns_structured_unsupported_without_task_signal(

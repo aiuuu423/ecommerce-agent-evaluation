@@ -210,6 +210,7 @@ git commit -m "feat(baseline): freeze deterministic v1 policy contract"
 ## Task 2：实现通用输入解析
 
 **Files:**
+- Modify: `app/baselines/v1/config.py`
 - Create: `app/baselines/v1/parsing.py`
 - Test: `tests/test_baseline_v1_parsing.py`
 
@@ -265,8 +266,8 @@ Expected: FAIL，原因是 `parse_request` 尚不存在。
 
 ```bash
 python3 -m pytest tests/test_baseline_v1_parsing.py -q
-python3 -m ruff check app/baselines/v1/parsing.py tests/test_baseline_v1_parsing.py
-git add app/baselines/v1/parsing.py tests/test_baseline_v1_parsing.py
+python3 -m ruff check app/baselines/v1/config.py app/baselines/v1/parsing.py tests/test_baseline_v1_parsing.py
+git add app/baselines/v1/config.py app/baselines/v1/parsing.py tests/test_baseline_v1_parsing.py
 git commit -m "feat(baseline): parse v1 task and query windows"
 ```
 

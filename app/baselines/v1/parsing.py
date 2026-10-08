@@ -4,13 +4,22 @@ from datetime import date, timedelta
 
 from app.tools.schemas import MAX_QUERY_WINDOW_DAYS, ProductId
 
-from .config import DEFAULT_WINDOW_DAYS, ROUTING_KEYWORDS, ROUTING_PRIORITY
+from .config import (
+    DEFAULT_WINDOW_DAYS,
+    ROUTING_KEYWORDS,
+    ROUTING_PRIORITY,
+    ROUTING_PROXIMITY_BONUS,
+    ROUTING_PROXIMITY_MAX_CHARS,
+)
 from .schemas import DateWindows, ParsedRequest, PolicyContext, TaskKind
 
 _PRODUCT_ID_PATTERN = re.compile(r"(?<![A-Z0-9])P[0-9]{3}(?![A-Z0-9])", re.IGNORECASE)
-_CLAUSE_PATTERN = re.compile(r"[^,，。;；!！?？\n]+")
+_EVIDENCE_CLAIM_PATTERN = re.compile(
+    r"(?<!可)(?:核验|验证|查证)|断言|唯一(?:主因|原因)|"
+    r"(?:不要|不能|不可|别).{0,8}(?:当|作为)?证据"
+)
 _RELATIVE_WINDOW_PATTERN = re.compile(
-    r"(?P<kind>最近|近|过去|前)\s*(?P<days>[0-9]+)\s*天"
+    r"(?P<kind>当前|最近|过去|此前|近|前)\s*(?P<days>[0-9]+)\s*天"
 )
 _DATE_TOKEN = (
     r"(?<![0-9])"
@@ -27,9 +36,6 @@ _DATE_RANGE_PATTERN = re.compile(
     + r"\s*(?:至|到|~|～)\s*"
     + _DATE_TOKEN.format(prefix="end_")
 )
-_TRAILING_GENERIC_INTENT_PATTERN = re.compile(
-    r"(?:原因|异常)(?:分析|诊断|情况)?\s*[。.!！?？]?\s*$"
-)
 
 
 class _UnsupportedDate(ValueError):
@@ -39,31 +45,17 @@ class _UnsupportedDate(ValueError):
 
 
 def _extract_product_ids(text: str) -> tuple[ProductId, ...]:
+    if _EVIDENCE_CLAIM_PATTERN.search(text):
+        return ()
+
     seen: set[str] = set()
     product_ids: list[str] = []
-    for clause_match in _CLAUSE_PATTERN.finditer(text):
-        clause = clause_match.group()
-        if _clause_uses_ids_as_claims(clause):
-            continue
-        for match in _PRODUCT_ID_PATTERN.finditer(clause):
-            product_id = match.group().upper()
-            if product_id not in seen:
-                seen.add(product_id)
-                product_ids.append(product_id)
+    for match in _PRODUCT_ID_PATTERN.finditer(text):
+        product_id = match.group().upper()
+        if product_id not in seen:
+            seen.add(product_id)
+            product_ids.append(product_id)
     return tuple(product_ids)
-
-
-def _clause_uses_ids_as_claims(clause: str) -> bool:
-    rejects_assertion = (
-        any(keyword in clause for keyword in ("不要", "不能", "不可", "别"))
-        and any(keyword in clause for keyword in ("断言", "说法", "结论"))
-        and any(keyword in clause for keyword in ("证据", "事实"))
-    )
-    verifies_unique_cause = (
-        any(keyword in clause for keyword in ("核验", "验证", "查证", "确认"))
-        and any(keyword in clause for keyword in ("唯一主因", "唯一原因"))
-    )
-    return rejects_assertion or verifies_unique_cause
 
 
 def _parse_window_days(token: str) -> int:
@@ -86,8 +78,8 @@ def _relative_window_days(matches: list[re.Match[str]]) -> int | None:
     if len(parsed) == 1:
         return parsed[0][1]
     if len(parsed) == 2:
-        current = [days for kind, days in parsed if kind != "前"]
-        previous = [days for kind, days in parsed if kind == "前"]
+        current = [days for kind, days in parsed if kind not in {"前", "此前"}]
+        previous = [days for kind, days in parsed if kind in {"前", "此前"}]
         if len(current) == len(previous) == 1 and current[0] == previous[0]:
             return current[0]
     raise _UnsupportedDate("conflicting_dates")
@@ -182,23 +174,54 @@ def _extract_windows(text: str, as_of_date: date) -> DateWindows:
     return _windows_for_period(start_date, end_date)
 
 
+def _keyword_spans(text: str, keywords: tuple[str, ...]) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        (match.start(), match.end())
+        for keyword in keywords
+        for match in re.finditer(re.escape(keyword.casefold()), text)
+    )
+
+
+def _minimum_group_gap(
+    text: str,
+    first_group: tuple[tuple[int, int], ...],
+    second_group: tuple[tuple[int, int], ...],
+) -> int:
+    minimum_gap = len(text)
+    for first_start, first_end in first_group:
+        for second_start, second_end in second_group:
+            if first_end <= second_start:
+                between = text[first_end:second_start]
+            elif second_end <= first_start:
+                between = text[second_end:first_start]
+            else:
+                return 0
+            compact_between = re.sub(r"\s+", "", between)
+            minimum_gap = min(minimum_gap, len(compact_between))
+    return minimum_gap
+
+
+def _intent_score(text: str, task: TaskKind) -> int | None:
+    groups = tuple(_keyword_spans(text, group) for group in ROUTING_KEYWORDS[task])
+    if any(not matches for matches in groups):
+        return None
+    score = len(groups)
+    gap = _minimum_group_gap(text, groups[0], groups[1])
+    if gap <= ROUTING_PROXIMITY_MAX_CHARS:
+        score += ROUTING_PROXIMITY_BONUS + ROUTING_PROXIMITY_MAX_CHARS - gap
+    return score
+
+
 def _classify_task(text: str) -> TaskKind:
     normalized = text.casefold()
-    matched_tasks = [
-        task
+    scored_tasks = [
+        (score, task)
         for task in ROUTING_PRIORITY
-        if all(
-            any(keyword.casefold() in normalized for keyword in group)
-            for group in ROUTING_KEYWORDS[task]
-        )
+        if (score := _intent_score(normalized, task)) is not None
     ]
-    if (
-        len(matched_tasks) > 1
-        and matched_tasks[0] is TaskKind.PRODUCT_ANOMALY
-        and _TRAILING_GENERIC_INTENT_PATTERN.search(normalized)
-    ):
-        return matched_tasks[1]
-    return matched_tasks[0] if matched_tasks else TaskKind.UNSUPPORTED
+    if not scored_tasks:
+        return TaskKind.UNSUPPORTED
+    return max(scored_tasks, key=lambda match: match[0])[1]
 
 
 def parse_request(text: str, context: PolicyContext) -> ParsedRequest:

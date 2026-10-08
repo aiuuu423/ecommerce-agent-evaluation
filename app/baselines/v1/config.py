@@ -15,6 +15,8 @@ POLICY_VERSION = "1.0.0"
 DEFAULT_WINDOW_DAYS = 30
 DEFAULT_TOP_K = 5
 ANSWER_TEMPLATE_VERSION = "1.0"
+ROUTING_PROXIMITY_BONUS = 2
+ROUTING_PROXIMITY_MAX_CHARS = 8
 
 ROUTING_PRIORITY = (
     TaskKind.PRODUCT_ANOMALY,
@@ -27,24 +29,24 @@ ROUTING_PRIORITY = (
 ROUTING_KEYWORDS: Mapping[TaskKind, tuple[tuple[str, ...], ...]] = MappingProxyType(
     {
         TaskKind.PRODUCT_ANOMALY: (
-            ("商品", "sku"),
-            ("异常", "问题"),
+            ("商品", "产品", "货品", "sku", "经营"),
+            ("异常", "问题", "偏离"),
         ),
         TaskKind.CONVERSION_DECLINE: (
-            ("转化", "cvr", "购买效率", "下单效率"),
-            ("下降", "下滑", "降低", "走低", "变差"),
+            ("转化", "cvr", "购买效率", "下单效率", "访购漏斗", "访购"),
+            ("下降", "下滑", "降低", "走低", "变差", "恶化", "退步", "衰退"),
         ),
         TaskKind.NEXT_WEEK_PRIORITY: (
-            ("下周", "下一步"),
-            ("优先", "重点", "动作", "关注", "安排"),
+            ("下周", "下一步", "下一周期", "后续周期"),
+            ("优先", "重点", "动作", "关注", "安排", "顺序", "队列", "处置"),
         ),
         TaskKind.PRODUCTS_TO_WATCH: (
-            ("关注", "重点", "预警", "风险", "留意", "跟进"),
-            ("商品", "产品", "sku", "对象"),
+            ("关注", "重点", "预警", "风险", "留意", "跟进", "监控", "观察", "跟踪"),
+            ("商品", "产品", "货品", "sku", "对象", "清单"),
         ),
         TaskKind.GMV_DIAGNOSIS: (
             ("gmv", "销售额", "营收", "成交"),
-            ("变化", "趋势", "走势", "走向", "增减", "诊断"),
+            ("变化", "趋势", "走势", "走向", "增减", "诊断", "表现", "波动", "对比"),
         ),
     }
 )
@@ -201,6 +203,8 @@ def policy_snapshot() -> dict[str, Any]:
         "policy_name": POLICY_NAME,
         "policy_version": POLICY_VERSION,
         "routing_priority": [task.value for task in ROUTING_PRIORITY],
+        "routing_proximity_bonus": ROUTING_PROXIMITY_BONUS,
+        "routing_proximity_max_chars": ROUTING_PROXIMITY_MAX_CHARS,
         "routing_keywords": {
             task.value: [list(group) for group in keyword_groups]
             for task, keyword_groups in ROUTING_KEYWORDS.items()
