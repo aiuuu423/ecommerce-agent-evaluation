@@ -203,6 +203,19 @@ def adapter_with(transport: SequenceTransport) -> OpenAICompatibleAdapter:
     )
 
 
+def adapter_with_system_prompt(
+    transport: SequenceTransport,
+    system_prompt: object,
+) -> OpenAICompatibleAdapter:
+    return OpenAICompatibleAdapter(
+        base_url="https://example.test/v1/",
+        api_key="secret",
+        model="test-model",
+        system_prompt=system_prompt,
+        transport=transport,
+    )
+
+
 def execution_for(call_id: str = "call_abc") -> PriorToolExecution:
     return PriorToolExecution(
         call_id=call_id,
@@ -220,6 +233,7 @@ def adapter_state(adapter: OpenAICompatibleAdapter) -> tuple[Any, ...]:
         deepcopy(adapter._pending_arguments),
         deepcopy(adapter._sent_executions),
         set(adapter._sent_call_ids),
+        adapter._system_seeded,
     )
 
 
@@ -313,6 +327,75 @@ def test_openai_adapter_keeps_two_round_transcript_and_call_id() -> None:
     )
     assert json.loads(tool_content)["result_id"] == "result_0001"
     assert "path" not in tool_content.lower()
+
+
+def test_openai_adapter_injects_system_prompt_once_across_tool_rounds() -> None:
+    system_prompt = "  Follow the frozen evaluation protocol.  "
+    transport = SequenceTransport([tool_payload(), answer_payload("done")])
+    adapter = adapter_with_system_prompt(transport, system_prompt)
+    first = adapter.complete(sample_request())
+    execution = PriorToolExecution(
+        call_id=first.action.tool_calls[0].call_id,
+        arguments=first.action.tool_calls[0].arguments,
+        result=sample_product_result(),
+    )
+
+    adapter.complete(sample_request(executions=[execution]))
+
+    assert transport.payloads[0]["messages"] == [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "查看 P001"},
+    ]
+    second_messages = transport.payloads[1]["messages"]
+    assert [message["role"] for message in second_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert sum(message["role"] == "system" for message in second_messages) == 1
+
+
+def test_openai_adapter_without_system_prompt_keeps_single_user_message() -> None:
+    transport = SequenceTransport([answer_payload()])
+
+    adapter_with(transport).complete(sample_request())
+
+    assert transport.payloads[0]["messages"] == [
+        {"role": "user", "content": "查看 P001"}
+    ]
+
+
+@pytest.mark.parametrize("system_prompt", ["", " \t\n", 42])
+def test_openai_adapter_rejects_invalid_optional_system_prompt(
+    system_prompt: object,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="system_prompt must be a non-empty string when provided",
+    ):
+        adapter_with_system_prompt(
+            SequenceTransport([answer_payload()]),
+            system_prompt,
+        )
+
+
+def test_openai_start_run_reseeds_system_prompt_exactly_once() -> None:
+    transport = SequenceTransport([answer_payload("first"), answer_payload("second")])
+    adapter = adapter_with_system_prompt(transport, "Follow policy.")
+    adapter.complete(sample_request(user_input="first run"))
+
+    adapter.start_run()
+    adapter.complete(sample_request(user_input="second run"))
+
+    assert transport.payloads[1]["messages"] == [
+        {"role": "system", "content": "Follow policy."},
+        {"role": "user", "content": "second run"},
+    ]
+    assert all(
+        sum(message["role"] == "system" for message in payload["messages"]) == 1
+        for payload in transport.payloads
+    )
 
 
 def test_openai_start_run_clears_previous_transcript() -> None:
@@ -503,9 +586,9 @@ def test_openai_adapter_rejects_unsafe_tool_call_id(call_id: str) -> None:
     assert all(call_id not in repr(item) for item in exception_chain(captured.value))
 
 
-def test_complete_restores_initial_state_after_transport_failure_and_can_retry() -> None:
+def test_system_prompt_state_rolls_back_after_transport_failure_and_can_retry() -> None:
     transport = FailingOnceTransport([answer_payload("retry succeeded")])
-    adapter = adapter_with(transport)
+    adapter = adapter_with_system_prompt(transport, "Follow policy.")
     request = sample_request()
     before = adapter_state(adapter)
 
@@ -516,8 +599,15 @@ def test_complete_restores_initial_state_after_transport_failure_and_can_retry()
     response = adapter.complete(request)
 
     assert response.action.final_answer == "retry succeeded"
-    assert transport.payloads[0]["messages"] == [{"role": "user", "content": "查看 P001"}]
     assert transport.payloads[1]["messages"] == transport.payloads[0]["messages"]
+    assert transport.payloads[1]["messages"] == [
+        {"role": "system", "content": "Follow policy."},
+        {"role": "user", "content": "查看 P001"},
+    ]
+    assert sum(
+        message["role"] == "system"
+        for message in transport.payloads[1]["messages"]
+    ) == 1
 
 
 def test_complete_restores_pending_state_after_invalid_usage_and_can_retry() -> None:

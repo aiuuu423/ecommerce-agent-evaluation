@@ -125,6 +125,7 @@ class OpenAICompatibleAdapter:
         model: str,
         temperature: float = 0.0,
         timeout_seconds: float = 30.0,
+        system_prompt: str | None = None,
         transport: JsonTransport | None = None,
     ) -> None:
         self._base_url = _validate_base_url(base_url)
@@ -132,6 +133,7 @@ class OpenAICompatibleAdapter:
         self._model = _validate_non_empty_string(model, "model")
         self._temperature = _validate_temperature(temperature)
         self._timeout_seconds = _validate_timeout(timeout_seconds)
+        self._system_prompt = _validate_optional_system_prompt(system_prompt)
         self._transport = transport or UrllibJsonTransport()
         self.start_run()
 
@@ -147,6 +149,7 @@ class OpenAICompatibleAdapter:
         self._pending_arguments: dict[str, JsonValue] | None = None
         self._sent_executions: list[dict[str, JsonValue]] = []
         self._sent_call_ids: set[str] = set()
+        self._system_seeded = False
 
     def complete(self, request: AdapterRequest) -> AdapterResponse:
         snapshot = (
@@ -157,6 +160,7 @@ class OpenAICompatibleAdapter:
             deepcopy(self._pending_arguments),
             deepcopy(self._sent_executions),
             set(self._sent_call_ids),
+            self._system_seeded,
         )
         try:
             self._advance_transcript(request)
@@ -196,6 +200,7 @@ class OpenAICompatibleAdapter:
                 self._pending_arguments,
                 self._sent_executions,
                 self._sent_call_ids,
+                self._system_seeded,
             ) = snapshot
             raise
 
@@ -203,6 +208,11 @@ class OpenAICompatibleAdapter:
         if self._user_input is None:
             if request.prior_tool_executions:
                 raise OpenAIProtocolError("unknown call_id in prior tool executions")
+            if self._system_prompt is not None and not self._system_seeded:
+                self._messages.append(
+                    {"role": "system", "content": self._system_prompt}
+                )
+                self._system_seeded = True
             self._user_input = request.user_input
             self._tools = deepcopy(request.tools)
             self._messages.append({"role": "user", "content": request.user_input})
@@ -385,6 +395,16 @@ def _validate_non_empty_string(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value.strip()
+
+
+def _validate_optional_system_prompt(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "system_prompt must be a non-empty string when provided"
+        )
+    return value
 
 
 def _validate_temperature(value: object) -> float:
