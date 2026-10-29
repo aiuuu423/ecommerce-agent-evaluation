@@ -3,7 +3,6 @@ import os
 import stat
 import tempfile
 from collections.abc import Mapping, Sequence
-from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
@@ -13,10 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.experiments.artifacts import canonical_json_bytes
 from app.experiments.llm_artifacts import (
     PublishedRealRun,
+    VerifiedRealRunSnapshot,
     _cleanup_verified_staging,
     _directory_identity,
     _rename_directory_exclusive,
-    verify_published_real_run,
+    verify_published_real_run_snapshot,
 )
 from app.experiments.llm_run import PairedRunResult
 
@@ -247,37 +247,33 @@ def _build_fairness(
 
 def _verified_runs(
     result: PairedRunResult,
-) -> tuple[PublishedRealRun, PublishedRealRun]:
+) -> tuple[VerifiedRealRunSnapshot, VerifiedRealRunSnapshot]:
     try:
-        v1 = verify_published_real_run(result.v1_path)
-        v2 = verify_published_real_run(result.v2_path)
+        v1 = verify_published_real_run_snapshot(result.v1_path)
+        v2 = verify_published_real_run_snapshot(result.v2_path)
     except (OSError, ValueError) as exc:
         raise ComparisonError("published run verification failed") from exc
     return v1, v2
 
 
-def _file_sha256(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
-
-
 def _manifest(
     result: PairedRunResult,
-    v1: PublishedRealRun,
-    v2: PublishedRealRun,
+    v1: VerifiedRealRunSnapshot,
+    v2: VerifiedRealRunSnapshot,
     fairness: FairnessReport,
 ) -> ComparisonManifest:
     return ComparisonManifest(
         artifact_schema_version=COMPARISON_SCHEMA_VERSION,
         comparison_group_id=result.comparison_group_id,
         experiment_mode=result.mode,
-        v1_run_id=v1.manifest.run_id,
-        v2_run_id=v2.manifest.run_id,
-        v1_run_manifest_sha256=_file_sha256(result.v1_path / "run_manifest.json"),
-        v2_run_manifest_sha256=_file_sha256(result.v2_path / "run_manifest.json"),
-        v1_case_runs_sha256=_file_sha256(result.v1_path / "case_runs.jsonl"),
-        v2_case_runs_sha256=_file_sha256(result.v2_path / "case_runs.jsonl"),
-        case_subset_id=v1.manifest.case_subset_id,
-        case_subset_sha256=v1.manifest.case_subset_sha256,
+        v1_run_id=v1.run.manifest.run_id,
+        v2_run_id=v2.run.manifest.run_id,
+        v1_run_manifest_sha256=v1.run_manifest_sha256,
+        v2_run_manifest_sha256=v2.run_manifest_sha256,
+        v1_case_runs_sha256=v1.case_runs_sha256,
+        v2_case_runs_sha256=v2.case_runs_sha256,
+        case_subset_id=v1.run.manifest.case_subset_id,
+        case_subset_sha256=v1.run.manifest.case_subset_sha256,
         case_ids=tuple(result.case_ids),
         version_order={
             case_id: tuple(result.version_order[case_id])
@@ -293,20 +289,24 @@ def write_comparison(
     *,
     comparisons_root: Path,
 ) -> Path:
-    v1, v2 = _verified_runs(result)
-    fairness = _build_fairness(result, v1, v2)
+    initial_v1, initial_v2 = _verified_runs(result)
+    fairness = _build_fairness(result, initial_v1.run, initial_v2.run)
     if not fairness.passed:
         raise ComparisonError(f"fairness checks failed: {', '.join(fairness.failures)}")
 
     try:
-        manifest = _manifest(result, v1, v2, fairness)
         confirmed_v1, confirmed_v2 = _verified_runs(result)
     except ComparisonError:
         raise
     except (OSError, ValueError) as exc:
         raise ComparisonError("comparison manifest validation failed") from exc
-    if confirmed_v1 != v1 or confirmed_v2 != v2:
+    if confirmed_v1 != initial_v1 or confirmed_v2 != initial_v2:
         raise ComparisonError("published run verification changed")
+    fairness = _build_fairness(result, confirmed_v1.run, confirmed_v2.run)
+    try:
+        manifest = _manifest(result, confirmed_v1, confirmed_v2, fairness)
+    except (OSError, ValueError) as exc:
+        raise ComparisonError("comparison manifest validation failed") from exc
 
     comparisons_root.mkdir(parents=True, exist_ok=True)
     root = comparisons_root.resolve()

@@ -29,6 +29,7 @@ from app.experiments.llm_artifacts import (
     RealRunSummary,
     StoredPromptSnapshot,
     verify_published_real_run,
+    verify_published_real_run_snapshot,
 )
 from app.experiments.llm_run import PairedRunResult
 from app.prompts.base import compute_prompt_sha256
@@ -224,23 +225,52 @@ def test_comparison_publishes_strict_manifest_bound_to_run_files(
     assert published.case_ids == CASE_IDS
     assert published.fairness.passed is True
     assert published.fairness.failures == ()
-    assert (
-        published.v1_run_manifest_sha256
-        == sha256((result.v1_path / "run_manifest.json").read_bytes()).hexdigest()
-    )
-    assert (
-        published.v2_run_manifest_sha256
-        == sha256((result.v2_path / "run_manifest.json").read_bytes()).hexdigest()
-    )
-    assert (
-        published.v1_case_runs_sha256
-        == sha256((result.v1_path / "case_runs.jsonl").read_bytes()).hexdigest()
-    )
-    assert (
-        published.v2_case_runs_sha256
-        == sha256((result.v2_path / "case_runs.jsonl").read_bytes()).hexdigest()
-    )
+    v1_snapshot = verify_published_real_run_snapshot(result.v1_path)
+    v2_snapshot = verify_published_real_run_snapshot(result.v2_path)
+    assert published.v1_run_manifest_sha256 == v1_snapshot.run_manifest_sha256
+    assert published.v2_run_manifest_sha256 == v2_snapshot.run_manifest_sha256
+    assert published.v1_case_runs_sha256 == v1_snapshot.case_runs_sha256
+    assert published.v2_case_runs_sha256 == v2_snapshot.case_runs_sha256
     assert (path / "comparison.json").read_bytes().endswith(b"\n")
+
+
+def test_publish_rejects_self_consistent_run_swap_between_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, comparisons_root = _paired(tmp_path)
+    replacement_bundle = _bundle("v1").model_copy(
+        update={
+            "records": tuple(
+                record.model_copy(update={"final_answer": "Replacement answer"})
+                for record in _bundle("v1").records
+            )
+        }
+    )
+    replacement_path = RealArtifactWriter(tmp_path / "replacement").publish(
+        replacement_bundle
+    )
+    original_verifier = verify_published_real_run_snapshot
+    calls = 0
+
+    def swap_before_second_v1_snapshot(path: Path) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            result.v1_path.rename(tmp_path / "original-v1")
+            replacement_path.rename(result.v1_path)
+        return original_verifier(path)
+
+    monkeypatch.setattr(
+        comparisons,
+        "verify_published_real_run_snapshot",
+        swap_before_second_v1_snapshot,
+    )
+
+    with pytest.raises(ComparisonError, match="published run verification changed"):
+        write_comparison(result, comparisons_root=comparisons_root)
+
+    assert not comparisons_root.exists()
 
 
 @pytest.mark.parametrize(

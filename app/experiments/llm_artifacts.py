@@ -477,6 +477,13 @@ class PublishedRealRun(LlmArtifactModel):
     manifest: RealRunManifest
 
 
+@dataclass(frozen=True)
+class VerifiedRealRunSnapshot:
+    run: PublishedRealRun
+    run_manifest_sha256: str
+    case_runs_sha256: str
+
+
 def _reject_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON number: {value}")
 
@@ -612,8 +619,9 @@ def _read_real_directory(path: Path) -> dict[str, bytes]:
         os.close(directory_fd)
 
 
-def verify_published_real_run(path: Path) -> PublishedRealRun:
-    files = _read_real_directory(path)
+def _verify_real_run_files(
+    files: Mapping[str, bytes],
+) -> PublishedRealRun:
     manifest = _load_json(
         files["run_manifest.json"],
         "run_manifest.json",
@@ -657,6 +665,21 @@ def verify_published_real_run(path: Path) -> PublishedRealRun:
         prompt_snapshot=prompt_snapshot,
         manifest=manifest,
     )
+
+
+def verify_published_real_run_snapshot(
+    path: Path,
+) -> VerifiedRealRunSnapshot:
+    files = _read_real_directory(path)
+    return VerifiedRealRunSnapshot(
+        run=_verify_real_run_files(files),
+        run_manifest_sha256=sha256(files["run_manifest.json"]).hexdigest(),
+        case_runs_sha256=sha256(files["case_runs.jsonl"]).hexdigest(),
+    )
+
+
+def verify_published_real_run(path: Path) -> PublishedRealRun:
+    return verify_published_real_run_snapshot(path).run
 
 
 @dataclass(frozen=True)

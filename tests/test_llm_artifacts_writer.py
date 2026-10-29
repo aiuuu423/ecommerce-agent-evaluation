@@ -28,6 +28,7 @@ from app.experiments.llm_artifacts import (
     StoredPromptSnapshot,
     canonical_real_jsonl_bytes,
     verify_published_real_run,
+    verify_published_real_run_snapshot,
 )
 from app.prompts.base import compute_prompt_sha256
 
@@ -264,6 +265,30 @@ def test_stage_does_not_publish_until_commit_and_verifier_reads_result(
         "CASE_002",
     )
     assert (tmp_path / ".real-artifact-publish.lock").exists()
+
+
+def test_snapshot_hashes_the_same_verified_bytes_and_preserves_old_api(
+    tmp_path: Path,
+) -> None:
+    final = RealArtifactWriter(tmp_path).publish(bundle())
+
+    snapshot = verify_published_real_run_snapshot(final)
+
+    assert snapshot.run == verify_published_real_run(final)
+    assert snapshot.run_manifest_sha256 == sha256(
+        (final / "run_manifest.json").read_bytes()
+    ).hexdigest()
+    assert snapshot.case_runs_sha256 == sha256(
+        (final / "case_runs.jsonl").read_bytes()
+    ).hexdigest()
+
+
+def test_snapshot_verifier_rejects_tampering(tmp_path: Path) -> None:
+    final = RealArtifactWriter(tmp_path).publish(bundle())
+    (final / "summary.json").write_bytes(b"{}\n")
+
+    with pytest.raises(ValueError):
+        verify_published_real_run_snapshot(final)
 
 
 def test_publish_rejects_overwrite_without_changing_existing_run(
