@@ -38,7 +38,11 @@ def load_provider_settings(environ: Mapping[str, str]) -> ProviderSettings:
     if not model:
         raise ProviderConfigError("missing_model")
 
-    base_url = environ.get("LLM_BASE_URL", "").strip().rstrip("/") or DEFAULT_BASE_URL
+    raw_base_url = environ.get("LLM_BASE_URL")
+    if raw_base_url is None or not raw_base_url.strip():
+        base_url = DEFAULT_BASE_URL
+    else:
+        base_url = raw_base_url.strip().rstrip("/")
     try:
         parsed_base_url = urlsplit(base_url)
         if (

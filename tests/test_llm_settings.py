@@ -57,6 +57,7 @@ def test_base_url_host_returns_only_hostname() -> None:
         ({"LLM_TIMEOUT_SECONDS": "inf"}, "invalid_timeout"),
         ({"LLM_TIMEOUT_SECONDS": "-inf"}, "invalid_timeout"),
         ({"LLM_BASE_URL": "not-a-url"}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "///"}, "invalid_base_url"),
         ({"LLM_BASE_URL": "file:///tmp/x"}, "invalid_base_url"),
         ({"LLM_BASE_URL": "https://user@example.com/v1"}, "invalid_base_url"),
         ({"LLM_BASE_URL": "https://user:password@example.com/v1"}, "invalid_base_url"),
