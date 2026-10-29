@@ -44,6 +44,13 @@ def load_provider_settings(environ: Mapping[str, str]) -> ProviderSettings:
         base_url = DEFAULT_BASE_URL
     else:
         base_url = raw_base_url.strip().rstrip("/")
+    if "?" in base_url or "#" in base_url or any(
+        character == "\\"
+        or character.isspace()
+        or category(character) == "Cc"
+        for character in base_url
+    ):
+        raise ProviderConfigError("invalid_base_url")
     try:
         parsed_base_url = urlsplit(base_url)
         hostname = parsed_base_url.hostname
@@ -53,14 +60,6 @@ def load_provider_settings(environ: Mapping[str, str]) -> ProviderSettings:
             or not hostname
             or parsed_base_url.username is not None
             or parsed_base_url.password is not None
-            or parsed_base_url.query
-            or parsed_base_url.fragment
-            or any(
-                character == "\\"
-                or character.isspace()
-                or category(character) == "Cc"
-                for character in hostname
-            )
         ):
             raise ProviderConfigError("invalid_base_url")
     except ValueError:
