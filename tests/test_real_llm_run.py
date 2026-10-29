@@ -226,6 +226,23 @@ def _coordinator(transport: ImmediateAnswerTransport) -> PairedRunCoordinator:
     )
 
 
+def _payload_version(payload: dict[str, Any]) -> str:
+    system_message = payload["messages"][0]
+    assert system_message["role"] == "system"
+    prompt_text = system_message["content"]
+    if prompt_text == llm_run.v1_prompt_snapshot().prompt_text:
+        return "v1"
+    if prompt_text == llm_run.v2_prompt_snapshot().prompt_text:
+        return "v2"
+    raise AssertionError("transport call used an unknown system prompt")
+
+
+def _payload_without_system(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(payload)
+    del normalized["messages"][0]
+    return normalized
+
+
 def test_task9_public_api_is_frozen_and_error_codes_are_exact() -> None:
     settings = RunSettings()
     result_fields = tuple(PairedRunResult.__dataclass_fields__)
@@ -319,17 +336,11 @@ def test_pilot_runs_frozen_cases_and_publishes_verified_pair(
             for execution in record.prior_tool_executions
         )
     assert len(transport.calls) == 40
-    first_v1 = transport.calls[0]["payload"]
-    first_v2 = transport.calls[1]["payload"]
-    assert first_v1["messages"][0]["role"] == "system"
-    assert first_v2["messages"][0]["role"] == "system"
-    assert first_v1["messages"][0]["content"] != first_v2["messages"][0]["content"]
-    assert first_v1["messages"][1:] == first_v2["messages"][1:]
-    assert {
-        key: value for key, value in first_v1.items() if key != "messages"
-    } == {
-        key: value for key, value in first_v2.items() if key != "messages"
-    }
+    for call_index in range(0, 40, 2):
+        first = transport.calls[call_index]["payload"]
+        second = transport.calls[call_index + 1]["payload"]
+        assert (_payload_version(first), _payload_version(second)) == ("v1", "v2")
+        assert _payload_without_system(first) == _payload_without_system(second)
 
 
 def test_formal_alternates_execution_but_preserves_record_order(
@@ -376,6 +387,59 @@ def test_formal_alternates_execution_but_preserves_record_order(
         assert published.manifest.case_subset_id == "all-100-v1"
         assert published.manifest.case_subset_sha256 == expected_subset_sha256
     assert len(transport.calls) == 200
+    for case_index, call_index in enumerate(range(0, 200, 2), start=1):
+        first = transport.calls[call_index]["payload"]
+        second = transport.calls[call_index + 1]["payload"]
+        expected_order = ("v1", "v2") if case_index % 2 else ("v2", "v1")
+        assert (_payload_version(first), _payload_version(second)) == expected_order
+        assert _payload_without_system(first) == _payload_without_system(second)
+
+
+def test_pilot_uses_fresh_catalog_registry_and_adapter_per_version_case(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _pilot_bundle(dataset_dirs)
+    catalogs: list[object] = []
+    registries: list[object] = []
+    adapters: list[object] = []
+    original_open_dataset = llm_run.open_dataset
+    original_build_registry = llm_run.build_default_registry
+    original_adapter = llm_run.OpenAICompatibleAdapter
+
+    def tracked_open_dataset(path: Path) -> object:
+        catalog = original_open_dataset(path)
+        catalogs.append(catalog)
+        return catalog
+
+    def tracked_build_registry() -> object:
+        registry = original_build_registry()
+        registries.append(registry)
+        return registry
+
+    def tracked_adapter(**kwargs: object) -> object:
+        adapter = original_adapter(**kwargs)  # type: ignore[arg-type]
+        adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(llm_run, "open_dataset", tracked_open_dataset)
+    monkeypatch.setattr(llm_run, "build_default_registry", tracked_build_registry)
+    monkeypatch.setattr(llm_run, "OpenAICompatibleAdapter", tracked_adapter)
+
+    _coordinator(ImmediateAnswerTransport()).run(
+        mode="pilot",
+        cases=bundle,
+        dataset_dirs=_mapping(bundle, dataset_dirs),
+        run_output_root=tmp_path,
+    )
+
+    assert len(catalogs) == 42
+    assert len({id(catalog) for catalog in catalogs}) == 42
+    assert len(registries) == 40
+    assert len({id(registry) for registry in registries}) == 40
+    assert len(adapters) == 40
+    assert len({id(adapter) for adapter in adapters}) == 40
 
 
 def test_transport_failure_is_isolated_without_retry_or_exception_text(
@@ -621,3 +685,101 @@ def test_second_commit_failure_rolls_back_first_and_cleans_staging(
     assert output_root.is_dir()
     assert not any(path.is_dir() for path in output_root.iterdir())
     assert not any(".tmp-" in path.name for path in output_root.iterdir())
+
+
+def test_publish_cleanup_failure_still_attempts_other_side(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _pilot_bundle(dataset_dirs)
+    output_root = tmp_path / "cleanup-failure"
+    original_commit = RealArtifactWriter.commit
+    original_rollback = RealArtifactWriter.rollback_published
+    commit_count = 0
+    rollback_paths: list[Path] = []
+
+    def fail_after_second_commit(
+        self: RealArtifactWriter,
+        staged: object,
+    ) -> Path:
+        nonlocal commit_count
+        commit_count += 1
+        result = original_commit(self, staged)  # type: ignore[arg-type]
+        if commit_count == 2:
+            raise OSError("injected publish wrapper failure")
+        return result
+
+    def fail_first_rollback(
+        self: RealArtifactWriter,
+        path: Path,
+    ) -> None:
+        rollback_paths.append(path)
+        if len(rollback_paths) == 1:
+            raise OSError("injected cleanup failure")
+        original_rollback(self, path)
+
+    monkeypatch.setattr(RealArtifactWriter, "commit", fail_after_second_commit)
+    monkeypatch.setattr(
+        RealArtifactWriter,
+        "rollback_published",
+        fail_first_rollback,
+    )
+
+    with pytest.raises(RunLevelError, match=r"^artifact_publish_error$") as caught:
+        _coordinator(ImmediateAnswerTransport()).run(
+            mode="pilot",
+            cases=bundle,
+            dataset_dirs=_mapping(bundle, dataset_dirs),
+            run_output_root=output_root,
+        )
+
+    assert caught.value.__cause__ is None
+    assert commit_count == 2
+    assert len(rollback_paths) == 2
+    assert rollback_paths[0] != rollback_paths[1]
+    assert not rollback_paths[1].exists()
+
+
+def test_publish_rollback_does_not_delete_replacement_final(
+    tmp_path: Path,
+    dataset_dirs: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _pilot_bundle(dataset_dirs)
+    output_root = tmp_path / "replacement"
+    original_commit = RealArtifactWriter.commit
+    commit_count = 0
+    replacement_path: Path | None = None
+    marker: Path | None = None
+
+    def replace_after_second_commit(
+        self: RealArtifactWriter,
+        staged: object,
+    ) -> Path:
+        nonlocal commit_count, replacement_path, marker
+        commit_count += 1
+        result = original_commit(self, staged)  # type: ignore[arg-type]
+        if commit_count == 2:
+            replacement_path = result
+            result.rename(output_root / "original-published")
+            result.mkdir()
+            marker = result / "replacement.txt"
+            marker.write_text("keep", encoding="utf-8")
+            raise OSError("injected replacement failure")
+        return result
+
+    monkeypatch.setattr(RealArtifactWriter, "commit", replace_after_second_commit)
+
+    with pytest.raises(RunLevelError, match=r"^artifact_publish_error$"):
+        _coordinator(ImmediateAnswerTransport()).run(
+            mode="pilot",
+            cases=bundle,
+            dataset_dirs=_mapping(bundle, dataset_dirs),
+            run_output_root=output_root,
+        )
+
+    assert replacement_path is not None
+    assert marker is not None
+    assert replacement_path.is_dir()
+    assert marker.read_text(encoding="utf-8") == "keep"

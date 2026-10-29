@@ -451,6 +451,126 @@ def test_commit_rejects_replayed_staged_run(tmp_path: Path) -> None:
     assert final.is_dir()
 
 
+def test_discard_removes_owned_staging_and_rejects_replay(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+
+    writer.discard(staged)
+
+    assert not staged.temp_dir.exists()
+    assert not staged.final_dir.exists()
+    with pytest.raises(ValueError, match="staged"):
+        writer.discard(staged)
+
+
+def test_discard_rejects_forged_and_cross_writer_staging(
+    tmp_path: Path,
+) -> None:
+    owner = RealArtifactWriter(tmp_path / "outputs")
+    staged = owner.stage(bundle())
+    external = tmp_path / "external"
+    external.mkdir()
+    forged = StagedRealRun(temp_dir=external, final_dir=staged.final_dir)
+
+    with pytest.raises(ValueError, match="staged"):
+        owner.discard(forged)
+    with pytest.raises(ValueError, match="staged"):
+        RealArtifactWriter(tmp_path / "outputs").discard(staged)
+
+    assert external.is_dir()
+    assert staged.temp_dir.is_dir()
+
+
+def test_discard_rejects_replacement_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    original = tmp_path / "original-staging"
+    staged.temp_dir.rename(original)
+    staged.temp_dir.mkdir()
+    marker = staged.temp_dir / "replacement.txt"
+    marker.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="staged"):
+        writer.discard(staged)
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert original.is_dir()
+
+
+def test_rollback_published_removes_owned_final_and_rejects_replay(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    final = writer.publish(bundle())
+
+    writer.rollback_published(final)
+
+    assert not final.exists()
+    with pytest.raises(ValueError, match="published"):
+        writer.rollback_published(final)
+
+
+def test_rollback_published_rejects_replacement_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    final = writer.publish(bundle())
+    original = tmp_path / "original-published"
+    final.rename(original)
+    final.mkdir()
+    marker = final / "replacement.txt"
+    marker.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="published"):
+        writer.rollback_published(final)
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert original.is_dir()
+
+
+def test_rollback_published_rejects_content_tampering_without_deleting(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    final = writer.publish(bundle())
+    summary_path = final / "summary.json"
+    summary_path.write_bytes(b"tampered\n")
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        writer.rollback_published(final)
+
+    assert final.is_dir()
+    assert summary_path.read_bytes() == b"tampered\n"
+
+
+def test_rollback_published_restores_directory_changed_during_atomic_move(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    final = writer.publish(bundle())
+    summary_path = final / "summary.json"
+    atomic_rename = llm_artifacts._rename_directory_exclusive_impl
+
+    def tamper_then_rename(source: Path, destination: Path) -> None:
+        if source == final:
+            summary_path.write_bytes(b"racing tamper\n")
+        atomic_rename(source, destination)
+
+    with mock.patch(
+        "app.experiments.llm_artifacts._rename_directory_exclusive_impl",
+        side_effect=tamper_then_rename,
+    ):
+        with pytest.raises(ValueError, match="fingerprint"):
+            writer.rollback_published(final)
+
+    assert final.is_dir()
+    assert summary_path.read_bytes() == b"racing tamper\n"
+
+
 def test_open_verified_staging_directory_closes_fd_when_fstat_fails(
     tmp_path: Path,
 ) -> None:

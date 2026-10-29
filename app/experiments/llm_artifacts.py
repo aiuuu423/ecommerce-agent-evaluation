@@ -677,6 +677,13 @@ class _StagedCapability:
     file_fingerprints: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True)
+class _PublishedCapability:
+    final_dir: Path
+    identity: DirectoryIdentity
+    file_fingerprints: tuple[tuple[str, str], ...]
+
+
 def _directory_identity(metadata: os.stat_result) -> DirectoryIdentity:
     return metadata.st_dev, metadata.st_ino
 
@@ -853,6 +860,7 @@ class RealArtifactWriter:
     def __init__(self, output_root: Path) -> None:
         self.output_root = output_root
         self._staged_capabilities: dict[int, _StagedCapability] = {}
+        self._published_capabilities: dict[Path, _PublishedCapability] = {}
 
     def _write_file(self, path: Path, contents: bytes) -> None:
         path.write_bytes(contents)
@@ -996,12 +1004,102 @@ class RealArtifactWriter:
                 except ValueError:
                     _move_unverified_final_aside(final_dir, temp_dir)
                     raise
+                self._published_capabilities[final_dir] = _PublishedCapability(
+                    final_dir=final_dir,
+                    identity=capability.identity,
+                    file_fingerprints=file_fingerprints,
+                )
         except BaseException:
             _cleanup_verified_staging(temp_dir, capability.identity)
             raise
         finally:
             os.close(directory_fd)
         return staged.final_dir
+
+    def discard(self, staged: StagedRealRun) -> None:
+        capability = self._validate_staged_capability(staged)
+        _verified_directory_identity(
+            capability.temp_dir,
+            capability.identity,
+        )
+        del self._staged_capabilities[id(staged)]
+        _cleanup_verified_staging(
+            capability.temp_dir,
+            capability.identity,
+        )
+
+    def rollback_published(self, path: Path) -> None:
+        capability = self._published_capabilities.get(path)
+        if capability is None or capability.final_dir != path:
+            raise ValueError("published run was not created by this writer")
+        if (
+            path.parent != self.output_root.resolve()
+            or path != capability.final_dir
+        ):
+            raise ValueError("published run path is not safe for this writer")
+
+        try:
+            directory_fd = _open_verified_staging_directory(
+                path,
+                capability.identity,
+            )
+        except ValueError:
+            raise ValueError(
+                "published directory does not match verified filesystem identity"
+            ) from None
+        try:
+            published_files = _read_real_directory_fd(directory_fd)
+        finally:
+            os.close(directory_fd)
+        file_fingerprints = tuple(
+            sorted(
+                (file_name, sha256(contents).hexdigest())
+                for file_name, contents in published_files.items()
+            )
+        )
+        if file_fingerprints != capability.file_fingerprints:
+            raise ValueError("published artifact file fingerprint mismatch")
+        _verified_directory_identity(path, capability.identity)
+
+        del self._published_capabilities[path]
+        rollback_path = _hidden_sibling(path, "rollback")
+        try:
+            _rename_directory_exclusive_impl(path, rollback_path)
+        except OSError:
+            return
+        try:
+            _verified_directory_identity(
+                rollback_path,
+                capability.identity,
+            )
+            rollback_fd = _open_verified_staging_directory(
+                rollback_path,
+                capability.identity,
+            )
+            try:
+                rollback_files = _read_real_directory_fd(rollback_fd)
+            finally:
+                os.close(rollback_fd)
+            rollback_fingerprints = tuple(
+                sorted(
+                    (file_name, sha256(contents).hexdigest())
+                    for file_name, contents in rollback_files.items()
+                )
+            )
+            if rollback_fingerprints != capability.file_fingerprints:
+                raise ValueError(
+                    "published artifact file fingerprint mismatch"
+                )
+        except BaseException:
+            try:
+                _rename_directory_exclusive_impl(rollback_path, path)
+            except OSError:
+                pass
+            raise
+        _cleanup_verified_staging(
+            rollback_path,
+            capability.identity,
+        )
 
     def publish(self, bundle: RealRunArtifactBundle) -> Path:
         staged = self.stage(bundle)

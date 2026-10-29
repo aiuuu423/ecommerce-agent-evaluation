@@ -1,8 +1,6 @@
 import json
 import math
 import secrets
-import shutil
-import stat
 import subprocess
 import sys
 import time
@@ -271,28 +269,6 @@ def _formal_subset_sha256(case_ids: tuple[str, ...]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return sha256(payload).hexdigest()
-
-
-def _path_identity(path: Path) -> tuple[int, int] | None:
-    try:
-        metadata = path.lstat()
-    except OSError:
-        return None
-    return metadata.st_dev, metadata.st_ino
-
-
-def _remove_known_directory(path: Path, identity: tuple[int, int], root: Path) -> None:
-    try:
-        resolved_parent = path.parent.resolve()
-        metadata = path.lstat()
-    except OSError:
-        return
-    if (
-        resolved_parent == root
-        and stat.S_ISDIR(metadata.st_mode)
-        and (metadata.st_dev, metadata.st_ino) == identity
-    ):
-        shutil.rmtree(path)
 
 
 class PairedRunCoordinator:
@@ -654,34 +630,32 @@ class PairedRunCoordinator:
         v2_bundle: RealRunArtifactBundle,
     ) -> tuple[Path, Path, PublishedRealRun, PublishedRealRun]:
         writer = RealArtifactWriter(output_root)
-        staged: list[tuple[StagedRealRun, tuple[int, int]]] = []
-        committed: list[tuple[Path, tuple[int, int]]] = []
+        staged: list[StagedRealRun] = []
+        committed: list[Path] = []
         verified: list[PublishedRealRun] = []
-        root = output_root.resolve()
         try:
             for bundle in (v1_bundle, v2_bundle):
                 item = writer.stage(bundle)
-                identity = _path_identity(item.temp_dir)
-                if identity is None:
-                    raise ValueError("staged run identity is unavailable")
                 verify_published_real_run(item.temp_dir)
-                staged.append((item, identity))
-            for item, identity in staged:
+                staged.append(item)
+            for item in staged:
                 final_path = writer.commit(item)
-                final_identity = _path_identity(final_path)
-                if final_identity != identity:
-                    raise ValueError("committed run identity changed")
-                committed.append((final_path, identity))
+                committed.append(final_path)
             verified = [
                 verify_published_real_run(final_path)
-                for final_path, _identity in committed
+                for final_path in committed
             ]
         except BaseException:
-            for item, identity in staged:
-                _remove_known_directory(item.temp_dir, identity, root)
-                _remove_known_directory(item.final_dir, identity, root)
+            for item in staged:
+                try:
+                    writer.rollback_published(item.final_dir)
+                except BaseException:
+                    try:
+                        writer.discard(item)
+                    except BaseException:
+                        pass
             raise RunLevelError("artifact_publish_error") from None
-        return committed[0][0], committed[1][0], verified[0], verified[1]
+        return committed[0], committed[1], verified[0], verified[1]
 
 
 __all__ = [
