@@ -33,6 +33,8 @@ dev = [
 build-phase1 = "app.data.phase1:main"
 phase2-smoke = "app.experiments.phase2_smoke:main"
 phase3-baseline = "app.experiments.baseline_v1:main"
+real-llm-pilot = "app.experiments.llm_cli:pilot_main"
+real-llm-formal = "app.experiments.llm_cli:formal_main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

@@ -23,3 +23,5 @@ data/evaluation_cases/*
 data/results/*
 !data/results/.gitkeep
 outputs/experiment_runs/
+outputs/real_runs/
+outputs/paired_comparisons/

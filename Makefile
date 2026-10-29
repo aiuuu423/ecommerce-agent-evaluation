@@ -8,8 +8,13 @@ PHASE3_CASE_DIR ?= data/evaluation_cases/v1
 PHASE3_DEVELOPMENT_DATASET ?= data/synthetic/v1
 PHASE3_PUBLIC_VALIDATION_DATASET ?= data/synthetic/public-validation-v1
 PHASE3_OUTPUT_ROOT ?= outputs/experiment_runs
+REAL_RUN_CASE_DIR ?= data/evaluation_cases/v1
+REAL_RUN_DEVELOPMENT_DATASET ?= data/synthetic/v1
+REAL_RUN_PUBLIC_VALIDATION_DATASET ?= data/synthetic/public-validation-v1
+REAL_RUN_OUTPUT_ROOT ?= outputs/real_runs
+REAL_RUN_COMPARISONS_ROOT ?= outputs/paired_comparisons
 
-.PHONY: check-python install lock test lint phase1-data phase1-cases phase1 phase2-smoke phase3-baseline
+.PHONY: check-python install lock test lint phase1-data phase1-cases phase1 phase2-smoke phase3-baseline real-llm-pilot real-llm-formal
 
 check-python:
 	@command -v "$(PYTHON)" >/dev/null 2>&1 || { \
@@ -67,3 +72,20 @@ phase3-baseline: check-python
 		--development-dataset "$(PHASE3_DEVELOPMENT_DATASET)" \
 		--public-validation-dataset "$(PHASE3_PUBLIC_VALIDATION_DATASET)" \
 		--output-root "$(PHASE3_OUTPUT_ROOT)"
+
+real-llm-pilot: check-python
+	@"$(PYTHON)" -m app.experiments.llm_cli pilot \
+		--case-dir "$(REAL_RUN_CASE_DIR)" \
+		--development-dataset "$(REAL_RUN_DEVELOPMENT_DATASET)" \
+		--public-validation-dataset "$(REAL_RUN_PUBLIC_VALIDATION_DATASET)" \
+		--run-output-root "$(REAL_RUN_OUTPUT_ROOT)" \
+		--comparisons-root "$(REAL_RUN_COMPARISONS_ROOT)" ; \
+	code=$$?; if [ $$code -eq 2 ]; then echo "pilot technical gate failed; do not run formal" >&2; fi; exit $$code
+
+real-llm-formal: check-python
+	@"$(PYTHON)" -m app.experiments.llm_cli formal \
+		--case-dir "$(REAL_RUN_CASE_DIR)" \
+		--development-dataset "$(REAL_RUN_DEVELOPMENT_DATASET)" \
+		--public-validation-dataset "$(REAL_RUN_PUBLIC_VALIDATION_DATASET)" \
+		--run-output-root "$(REAL_RUN_OUTPUT_ROOT)" \
+		--comparisons-root "$(REAL_RUN_COMPARISONS_ROOT)"
