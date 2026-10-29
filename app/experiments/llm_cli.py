@@ -98,16 +98,13 @@ def _run(mode: str, argv: Sequence[str] | None) -> int:
     except RunLevelError as exc:
         print(exc.code, file=sys.stderr)
         return 1
-    except (OSError, ValueError, ValidationError):
-        print("run_error", file=sys.stderr)
-        return 1
 
     try:
         comparison_path = write_comparison(
             result,
             comparisons_root=args.comparisons_root,
         )
-    except (ComparisonError, OSError, ValueError, ValidationError):
+    except ComparisonError:
         print("comparison_error", file=sys.stderr)
         return 1
 

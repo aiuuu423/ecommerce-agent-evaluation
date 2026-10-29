@@ -225,18 +225,34 @@ def test_case_load_errors_are_stable_and_redacted(
     assert "Traceback" not in captured.err
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        RunLevelError("dataset_identity_error"),
-        ValueError("secret-value"),
-        OSError("/secret/path"),
-        _validation_error(),
-    ],
-)
-def test_run_errors_are_stable_and_redacted(
+def test_run_level_error_is_stable_and_redacted(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("LLM_API_KEY", "provider-secret")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setattr(llm_cli, "load_runnable_cases", lambda path: _cases())
+
+    class FailingCoordinator:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def run(self, **kwargs: object) -> object:
+            raise RunLevelError("dataset_identity_error")
+
+    monkeypatch.setattr(llm_cli, "PairedRunCoordinator", FailingCoordinator)
+
+    assert formal_main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "dataset_identity_error\n"
+    assert "secret" not in captured.out + captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("error", [ValueError("secret-value"), _validation_error()])
+def test_unexpected_run_validation_errors_propagate(
+    monkeypatch: pytest.MonkeyPatch,
     error: Exception,
 ) -> None:
     monkeypatch.setenv("LLM_API_KEY", "provider-secret")
@@ -252,17 +268,8 @@ def test_run_errors_are_stable_and_redacted(
 
     monkeypatch.setattr(llm_cli, "PairedRunCoordinator", FailingCoordinator)
 
-    assert formal_main([]) == 1
-    captured = capsys.readouterr()
-    expected = (
-        "dataset_identity_error\n"
-        if isinstance(error, RunLevelError)
-        else "run_error\n"
-    )
-    assert captured.out == ""
-    assert captured.err == expected
-    assert "secret" not in captured.out + captured.err
-    assert "Traceback" not in captured.err
+    with pytest.raises(type(error), match="secret-value"):
+        formal_main([])
 
 
 def test_comparison_error_is_stable_and_redacted(
@@ -281,6 +288,20 @@ def test_comparison_error_is_stable_and_redacted(
     assert captured.out == ""
     assert captured.err == "comparison_error\n"
     assert "secret" not in captured.out + captured.err
+
+
+def test_unexpected_comparison_value_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_success_mocks(monkeypatch, result=_result())
+
+    def fail_comparison(result: object, *, comparisons_root: Path) -> Path:
+        raise ValueError("secret-value")
+
+    monkeypatch.setattr(llm_cli, "write_comparison", fail_comparison)
+
+    with pytest.raises(ValueError, match="secret-value"):
+        formal_main([])
 
 
 def test_module_dispatch_calls_the_selected_command(
