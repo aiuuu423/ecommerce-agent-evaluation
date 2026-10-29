@@ -89,6 +89,16 @@ class RealCaseRunRecord(LlmArtifactModel):
         }
         if len(token_availability) != 1:
             raise ValueError("token fields must be all present or all None")
+        if (
+            self.total_tokens is not None
+            and self.prompt_tokens is not None
+            and self.completion_tokens is not None
+            and self.total_tokens
+            != self.prompt_tokens + self.completion_tokens
+        ):
+            raise ValueError(
+                "total_tokens must equal prompt_tokens plus completion_tokens"
+            )
         return self
 
 
@@ -701,16 +711,19 @@ def _open_verified_staging_directory(
         raise ValueError(
             "staged directory does not match verified filesystem identity"
         ) from exc
-    opened = os.fstat(directory_fd)
-    if (
-        not stat.S_ISDIR(opened.st_mode)
-        or _directory_identity(opened) != expected_identity
-        or _directory_identity(opened) != before_identity
-    ):
+    try:
+        opened = os.fstat(directory_fd)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or _directory_identity(opened) != expected_identity
+            or _directory_identity(opened) != before_identity
+        ):
+            raise ValueError(
+                "staged directory does not match verified filesystem identity"
+            )
+    except BaseException:
         os.close(directory_fd)
-        raise ValueError(
-            "staged directory does not match verified filesystem identity"
-        )
+        raise
     return directory_fd
 
 
@@ -939,6 +952,7 @@ class RealArtifactWriter:
                     raise FileExistsError(
                         f"run already exists: {final_dir.name}"
                     )
+                verify_published_real_run(temp_dir)
                 _verified_directory_identity(
                     temp_dir,
                     capability.identity,

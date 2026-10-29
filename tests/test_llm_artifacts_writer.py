@@ -328,6 +328,54 @@ def test_commit_rejects_replacement_at_verified_staging_path(
     assert not staged.final_dir.exists()
 
 
+@pytest.mark.parametrize("mutation", ["tamper_summary", "add_extra_file"])
+def test_commit_reverifies_staged_contents_before_publish(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    if mutation == "tamper_summary":
+        (staged.temp_dir / "summary.json").write_bytes(b"{}\n")
+    else:
+        (staged.temp_dir / "extra.json").write_bytes(b"{}\n")
+
+    with pytest.raises(ValueError):
+        writer.commit(staged)
+
+    assert not staged.temp_dir.exists()
+    assert not staged.final_dir.exists()
+    with pytest.raises(ValueError, match="staged"):
+        writer.commit(staged)
+
+
+def test_commit_reverify_failure_does_not_delete_unknown_replacement(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    verified_dir = tmp_path / "verified-staging"
+    replacement_file = staged.temp_dir / "replacement.txt"
+
+    def replace_staging_then_fail(path: Path) -> None:
+        assert path == staged.temp_dir
+        staged.temp_dir.rename(verified_dir)
+        staged.temp_dir.mkdir()
+        replacement_file.write_text("unverified", encoding="utf-8")
+        raise ValueError("reverify failed")
+
+    with mock.patch(
+        "app.experiments.llm_artifacts.verify_published_real_run",
+        side_effect=replace_staging_then_fail,
+    ):
+        with pytest.raises(ValueError, match="reverify"):
+            writer.commit(staged)
+
+    assert replacement_file.read_text(encoding="utf-8") == "unverified"
+    assert verified_dir.is_dir()
+    assert not staged.final_dir.exists()
+
+
 def test_staging_identity_failure_does_not_consume_capability(
     tmp_path: Path,
 ) -> None:
@@ -377,6 +425,32 @@ def test_commit_rejects_replayed_staged_run(tmp_path: Path) -> None:
         writer.commit(staged)
 
     assert final.is_dir()
+
+
+def test_open_verified_staging_directory_closes_fd_when_fstat_fails(
+    tmp_path: Path,
+) -> None:
+    identity = llm_artifacts._directory_identity(tmp_path.lstat())
+
+    with (
+        mock.patch.object(
+            llm_artifacts.os,
+            "fstat",
+            side_effect=OSError("fstat failed"),
+        ),
+        mock.patch.object(
+            llm_artifacts.os,
+            "close",
+            wraps=llm_artifacts.os.close,
+        ) as close,
+    ):
+        with pytest.raises(OSError, match="fstat failed"):
+            llm_artifacts._open_verified_staging_directory(
+                tmp_path,
+                identity,
+            )
+
+    close.assert_called_once()
 
 
 def test_commit_rejects_registered_staged_run_with_unsafe_paths(
@@ -573,6 +647,35 @@ def test_verifier_rejects_output_file_tampering(tmp_path: Path) -> None:
         stream.write(b" ")
 
     with pytest.raises(ValueError, match="summary.json"):
+        verify_published_real_run(final)
+
+
+def test_verifier_rejects_record_token_mismatch_with_updated_hash(
+    tmp_path: Path,
+) -> None:
+    final = RealArtifactWriter(tmp_path).publish(bundle())
+    records_path = final / "case_runs.jsonl"
+    payload = [
+        json.loads(line) for line in records_path.read_bytes().splitlines()
+    ]
+    payload[0]["total_tokens"] = 11
+    records_path.write_bytes(
+        b"".join(canonical_json_bytes(item) for item in payload)
+    )
+    rewrite_output_hash(final, "case_runs.jsonl")
+    summary_path = final / "summary.json"
+    summary_payload = json.loads(summary_path.read_bytes())
+    summary_payload["tokens"].update(
+        total_total=41,
+        p50=11,
+    )
+    summary_path.write_bytes(canonical_json_bytes(summary_payload))
+    rewrite_output_hash(final, "summary.json")
+
+    with pytest.raises(
+        ValidationError,
+        match="total_tokens must equal prompt_tokens plus completion_tokens",
+    ):
         verify_published_real_run(final)
 
 

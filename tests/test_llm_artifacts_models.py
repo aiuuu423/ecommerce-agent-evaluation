@@ -203,6 +203,26 @@ def test_record_rejects_partial_token_usage() -> None:
         RealCaseRunRecord(**payload)
 
 
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_record_rejects_token_total_mismatch_for_usage(
+    status: str,
+) -> None:
+    payload = completed_record_payload()
+    if status == "failed":
+        payload.update(
+            status="failed",
+            final_answer=None,
+            error_code="provider_timeout",
+        )
+    payload["total_tokens"] = 121
+
+    with pytest.raises(
+        ValidationError,
+        match="total_tokens must equal prompt_tokens plus completion_tokens",
+    ):
+        RealCaseRunRecord(**payload)
+
+
 def test_record_is_frozen_strict_and_forbids_extra_fields() -> None:
     record = RealCaseRunRecord(**completed_record_payload())
 
