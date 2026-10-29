@@ -2,9 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.agents.schemas import TraceEvent
 from app.experiments.artifacts import SplitCounts, SplitRunStatusCounts
-from app.tools.schemas import PriorToolExecution
+from app.tools.schemas import JsonValue
 
 ARTIFACT_SCHEMA_VERSION = "2.0.0"
 REAL_OUTPUT_FILE_NAMES = {
@@ -42,8 +41,8 @@ class RealCaseRunRecord(LlmArtifactModel):
         default=None,
         pattern=r"^[a-z][a-z0-9_]*$",
     )
-    prior_tool_executions: tuple[PriorToolExecution, ...]
-    decision_trace: tuple[TraceEvent, ...]
+    prior_tool_executions: tuple[dict[str, JsonValue], ...]
+    decision_trace: tuple[dict[str, JsonValue], ...]
     latency_ms: int = Field(ge=0)
     prompt_tokens: int | None = Field(ge=0)
     completion_tokens: int | None = Field(ge=0)
@@ -72,7 +71,7 @@ class RealCaseRunRecord(LlmArtifactModel):
 class StoredPromptSnapshot(LlmArtifactModel):
     prompt_name: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
-    text: str = Field(min_length=1)
+    prompt_text: str = Field(min_length=1)
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     change_note: str = Field(min_length=1)
     source_file: str = Field(min_length=1)
