@@ -1,5 +1,6 @@
 import hashlib
 import json
+from collections import Counter
 
 from app.experiments.cases import CaseBundle, RunnableCase
 
@@ -47,10 +48,13 @@ def pilot_case_set_sha256() -> str:
 
 
 def select_pilot_cases(bundle: CaseBundle) -> tuple[RunnableCase, ...]:
-    cases_by_id = {case.case_id: case for case in bundle.cases}
-    if any(case_id not in cases_by_id for case_id in PILOT_CASE_IDS):
+    case_id_counts = Counter(case.case_id for case in bundle.cases)
+    if any(case_id_counts[case_id] == 0 for case_id in PILOT_CASE_IDS):
         raise PilotCaseSetError("pilot case set is incomplete")
+    if any(case_id_counts[case_id] > 1 for case_id in PILOT_CASE_IDS):
+        raise PilotCaseSetError("pilot case IDs must be unique")
 
+    cases_by_id = {case.case_id: case for case in bundle.cases}
     selected = tuple(cases_by_id[case_id] for case_id in PILOT_CASE_IDS)
     if any(case.split != "development" for case in selected):
         raise PilotCaseSetError("pilot cases must all be development cases")

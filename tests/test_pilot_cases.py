@@ -4,6 +4,7 @@ import pytest
 
 from app.experiments.cases import (
     CaseBundle,
+    CaseSplit,
     DatasetIdentity,
     EvaluationCaseManifest,
     RunnableCase,
@@ -48,6 +49,7 @@ def _case_bundle(
     case_ids: tuple[str, ...],
     *,
     public_validation_ids: frozenset[str] = frozenset(),
+    case_splits: tuple[CaseSplit, ...] | None = None,
 ) -> CaseBundle:
     datasets = {
         "development": DatasetIdentity(
@@ -61,6 +63,10 @@ def _case_bundle(
             generator_config_hash=SHA256,
         ),
     }
+    splits = case_splits or tuple(
+        "public_validation" if case_id in public_validation_ids else "development"
+        for case_id in case_ids
+    )
     cases = tuple(
         RunnableCase(
             case_id=case_id,
@@ -69,14 +75,9 @@ def _case_bundle(
             dataset_version=datasets[split].dataset_version,
             split=split,
         )
-        for case_id in case_ids
-        for split in (
-            "public_validation"
-            if case_id in public_validation_ids
-            else "development",
-        )
+        for case_id, split in zip(case_ids, splits, strict=True)
     )
-    if not public_validation_ids:
+    if "public_validation" not in splits:
         cases += (
             RunnableCase(
                 case_id="CASE_001",
@@ -147,5 +148,30 @@ def test_select_pilot_cases_rejects_non_development_case() -> None:
     with pytest.raises(
         PilotCaseSetError,
         match=r"^pilot cases must all be development cases$",
+    ):
+        select_pilot_cases(bundle)
+
+
+@pytest.mark.parametrize(
+    "duplicate_splits",
+    [
+        ("development", "public_validation"),
+        ("public_validation", "development"),
+    ],
+)
+def test_select_pilot_cases_rejects_duplicate_id_regardless_of_order(
+    duplicate_splits: tuple[CaseSplit, CaseSplit],
+) -> None:
+    other_case_ids = tuple(
+        case_id for case_id in EXPECTED_PILOT_CASE_IDS if case_id != "CASE_041"
+    )
+    bundle = _case_bundle(
+        other_case_ids + ("CASE_041", "CASE_041"),
+        case_splits=("development",) * len(other_case_ids) + duplicate_splits,
+    )
+
+    with pytest.raises(
+        PilotCaseSetError,
+        match=r"^pilot case IDs must be unique$",
     ):
         select_pilot_cases(bundle)
