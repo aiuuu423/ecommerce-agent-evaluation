@@ -1,7 +1,11 @@
+import ctypes
+import errno
 import json
+import math
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -298,6 +302,82 @@ def _validate_summary_against_records(
         raise ValueError("summary case order boundaries do not match records")
 
 
+def _percentile(values: Sequence[int], quantile: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, math.ceil(quantile * len(ordered)) - 1))
+    return ordered[index]
+
+
+def _validate_record_derived_metadata(
+    summary: RealRunSummary,
+    manifest: RealRunManifest,
+    records: Sequence[RealCaseRunRecord],
+) -> None:
+    _validate_summary_against_records(summary, records)
+
+    latencies = [record.latency_ms for record in records]
+    expected_latency = LatencyStats(
+        p50=_percentile(latencies, 0.50),
+        p95=_percentile(latencies, 0.95),
+        sample_size=len(records),
+    )
+    if summary.latency != expected_latency:
+        raise ValueError("summary latency does not match records")
+
+    records_with_usage = [
+        record for record in records if record.total_tokens is not None
+    ]
+    total_tokens = [
+        record.total_tokens
+        for record in records_with_usage
+        if record.total_tokens is not None
+    ]
+    usage_available = bool(records_with_usage)
+    expected_tokens = TokenStats(
+        available=usage_available,
+        prompt_total=(
+            sum(record.prompt_tokens or 0 for record in records_with_usage)
+            if usage_available
+            else None
+        ),
+        completion_total=(
+            sum(
+                record.completion_tokens or 0
+                for record in records_with_usage
+            )
+            if usage_available
+            else None
+        ),
+        total_total=sum(total_tokens) if usage_available else None,
+        p50=_percentile(total_tokens, 0.50) if usage_available else None,
+        p95=_percentile(total_tokens, 0.95) if usage_available else None,
+        sample_size=len(records_with_usage),
+    )
+    if summary.tokens != expected_tokens:
+        raise ValueError("summary token statistics do not match records")
+
+    expected_usage_status = (
+        "available" if summary.tokens.available else "unavailable"
+    )
+    if manifest.usage_status != expected_usage_status:
+        raise ValueError("manifest usage status does not match summary tokens")
+
+    dataset_identities = tuple(
+        (dataset.split, dataset.dataset_id, dataset.dataset_version)
+        for dataset in manifest.datasets
+    )
+    if len(dataset_identities) != len(set(dataset_identities)):
+        raise ValueError("manifest dataset identities must be unique")
+    observed_datasets = {
+        (record.split, record.dataset_id, record.dataset_version)
+        for record in records
+    }
+    if set(dataset_identities) != observed_datasets:
+        raise ValueError("manifest datasets do not match records")
+
+
 def _validate_prompt_identity(
     prompt_snapshot: StoredPromptSnapshot,
     prompt_identity: PromptIdentity,
@@ -356,7 +436,11 @@ class RealRunArtifactBundle(LlmArtifactModel):
             raise ValueError(
                 "case record sequence must be contiguous and one-based"
             )
-        _validate_summary_against_records(self.summary, self.records)
+        _validate_record_derived_metadata(
+            self.summary,
+            self.manifest,
+            self.records,
+        )
         if any(
             record.agent_version != self.manifest.agent_version
             for record in self.records
@@ -542,7 +626,7 @@ def verify_published_real_run(path: Path) -> PublishedRealRun:
                 f"{file_name} SHA-256 does not match manifest"
             )
     _validate_prompt_identity(prompt_snapshot, manifest.prompt)
-    _validate_summary_against_records(summary, records)
+    _validate_record_derived_metadata(summary, manifest, records)
     if any(
         record.agent_version != manifest.agent_version
         for record in records
@@ -566,9 +650,75 @@ class StagedRealRun:
     final_dir: Path
 
 
+def _raise_rename_error(error_number: int, destination: Path) -> None:
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise FileExistsError(
+            error_number,
+            os.strerror(error_number),
+            destination,
+        )
+    raise OSError(
+        error_number,
+        os.strerror(error_number),
+        destination,
+    )
+
+
+def _rename_directory_exclusive(source: Path, destination: Path) -> None:
+    if sys.platform == "win32":
+        os.rename(source, destination)
+        return
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform == "darwin":
+        try:
+            rename = libc.renamex_np
+        except AttributeError as exc:
+            raise RuntimeError("renamex_np is unavailable") from exc
+        rename.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(source_bytes, destination_bytes, 0x4)
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError as exc:
+            raise RuntimeError("renameat2 is unavailable") from exc
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            -100,
+            source_bytes,
+            -100,
+            destination_bytes,
+            1,
+        )
+    else:
+        raise RuntimeError(
+            f"exclusive directory rename is unsupported on {sys.platform}"
+        )
+    if result != 0:
+        _raise_rename_error(ctypes.get_errno(), destination)
+
+
 class RealArtifactWriter:
     def __init__(self, output_root: Path) -> None:
         self.output_root = output_root
+        self._staged_capabilities: dict[
+            int,
+            tuple[StagedRealRun, Path, Path],
+        ] = {}
 
     def _write_file(self, path: Path, contents: bytes) -> None:
         path.write_bytes(contents)
@@ -623,25 +773,54 @@ class RealArtifactWriter:
         except BaseException:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
-        return StagedRealRun(temp_dir=temp_dir, final_dir=final_dir)
+        staged = StagedRealRun(temp_dir=temp_dir, final_dir=final_dir)
+        self._staged_capabilities[id(staged)] = (
+            staged,
+            temp_dir.resolve(),
+            final_dir.resolve(),
+        )
+        return staged
+
+    def _consume_staged_capability(
+        self,
+        staged: StagedRealRun,
+    ) -> tuple[Path, Path]:
+        capability = self._staged_capabilities.get(id(staged))
+        if capability is None or capability[0] is not staged:
+            raise ValueError("staged run was not created by this writer")
+        del self._staged_capabilities[id(staged)]
+
+        _, expected_temp, expected_final = capability
+        output_root = self.output_root.resolve()
+        temp_dir = staged.temp_dir.resolve()
+        final_dir = staged.final_dir.resolve()
+        safe_prefix = f".{final_dir.name}.tmp-"
+        if (
+            temp_dir != expected_temp
+            or final_dir != expected_final
+            or temp_dir.parent != output_root
+            or final_dir.parent != output_root
+            or not temp_dir.name.startswith(safe_prefix)
+            or temp_dir.name == safe_prefix
+        ):
+            raise ValueError("staged run paths are not safe for this writer")
+        return temp_dir, final_dir
 
     def commit(self, staged: StagedRealRun) -> Path:
+        temp_dir, final_dir = self._consume_staged_capability(staged)
         try:
             with FileLock(self.output_root / _REAL_PUBLISH_LOCK_NAME):
-                if (
-                    staged.final_dir.exists()
-                    or staged.final_dir.is_symlink()
-                ):
+                if final_dir.exists() or final_dir.is_symlink():
                     raise FileExistsError(
-                        f"run already exists: {staged.final_dir.name}"
+                        f"run already exists: {final_dir.name}"
                     )
-                staged.temp_dir.replace(staged.final_dir)
+                _rename_directory_exclusive(temp_dir, final_dir)
         except BaseException:
-            if staged.temp_dir.exists() or staged.temp_dir.is_symlink():
-                if staged.temp_dir.is_symlink():
-                    staged.temp_dir.unlink()
+            if temp_dir.exists() or temp_dir.is_symlink():
+                if temp_dir.is_symlink():
+                    temp_dir.unlink()
                 else:
-                    shutil.rmtree(staged.temp_dir, ignore_errors=True)
+                    shutil.rmtree(temp_dir, ignore_errors=True)
             raise
         return staged.final_dir
 

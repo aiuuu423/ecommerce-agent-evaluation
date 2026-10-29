@@ -8,7 +8,12 @@ from unittest import mock
 import pytest
 from pydantic import ValidationError
 
-from app.experiments.artifacts import RuntimeVersions, canonical_json_bytes
+from app.experiments import llm_artifacts
+from app.experiments.artifacts import (
+    DatasetArtifactIdentity,
+    RuntimeVersions,
+    canonical_json_bytes,
+)
 from app.experiments.llm_artifacts import (
     ARTIFACT_SCHEMA_VERSION,
     PromptIdentity,
@@ -29,6 +34,8 @@ from app.prompts.base import compute_prompt_sha256
 SHA = "a" * 64
 RUN_ID = "real-v1__20261009T000000Z__abcd1234"
 PROMPT_TEXT = "系统\n\n完整指令。\n"
+DEVELOPMENT_DATASET_ID = "e1e81533c25e03e5"
+VALIDATION_DATASET_ID = "0123456789abcdef"
 
 
 def make_record(
@@ -42,7 +49,11 @@ def make_record(
         sequence=sequence,
         case_id=case_id,
         split=split,
-        dataset_id="e1e81533c25e03e5",
+        dataset_id=(
+            DEVELOPMENT_DATASET_ID
+            if split == "development"
+            else VALIDATION_DATASET_ID
+        ),
         dataset_version="1.0.0",
         agent_version=agent_version,
         repeat_index=1,
@@ -65,10 +76,10 @@ def make_record(
                 "payload": {"result_id": "result_001", "row_count": 1},
             },
         ),
-        latency_ms=120,
-        prompt_tokens=10,
-        completion_tokens=4,
-        total_tokens=14,
+        latency_ms=100 if sequence == 1 else 200,
+        prompt_tokens=7 if sequence == 1 else 20,
+        completion_tokens=3 if sequence == 1 else 10,
+        total_tokens=10 if sequence == 1 else 30,
     )
 
 
@@ -96,14 +107,14 @@ def summary() -> RealRunSummary:
         },
         first_case_id="CASE_001",
         last_case_id="CASE_002",
-        latency={"p50": 120, "p95": 120, "sample_size": 2},
+        latency={"p50": 100, "p95": 200, "sample_size": 2},
         tokens={
             "available": True,
-            "prompt_total": 20,
-            "completion_total": 8,
-            "total_total": 28,
-            "p50": 14,
-            "p95": 14,
+            "prompt_total": 27,
+            "completion_total": 13,
+            "total_total": 40,
+            "p50": 10,
+            "p95": 30,
             "sample_size": 2,
         },
         cost="unavailable",
@@ -135,7 +146,20 @@ def manifest(*, run_id: str = RUN_ID) -> RealRunManifest:
         case_manifest_sha256=SHA,
         case_subset_id="all-cases-v1",
         case_subset_sha256=SHA,
-        datasets=(),
+        datasets=(
+            DatasetArtifactIdentity(
+                split="development",
+                dataset_id=DEVELOPMENT_DATASET_ID,
+                dataset_version="1.0.0",
+                manifest_sha256=SHA,
+            ),
+            DatasetArtifactIdentity(
+                split="public_validation",
+                dataset_id=VALIDATION_DATASET_ID,
+                dataset_version="1.0.0",
+                manifest_sha256=SHA,
+            ),
+        ),
         tool_contract_version="1.0",
         tool_contract_sha256=SHA,
         adapter_name="openai-compatible",
@@ -267,6 +291,108 @@ def test_commit_rejects_racing_overwrite_and_cleans_staging(
         writer.commit(staged)
 
     assert not staged.temp_dir.exists()
+    with pytest.raises(ValueError, match="staged"):
+        writer.commit(staged)
+
+
+def test_commit_rejects_staged_run_from_another_writer(
+    tmp_path: Path,
+) -> None:
+    owner = RealArtifactWriter(tmp_path)
+    staged = owner.stage(bundle())
+
+    with pytest.raises(ValueError, match="staged"):
+        RealArtifactWriter(tmp_path).commit(staged)
+
+    assert staged.temp_dir.is_dir()
+    assert not staged.final_dir.exists()
+
+
+def test_commit_rejects_forged_staged_run_without_touching_external_paths(
+    tmp_path: Path,
+) -> None:
+    external_temp = tmp_path / "external-temp"
+    external_final = tmp_path / "external-final"
+    external_temp.mkdir()
+    external_final.mkdir()
+    forged = StagedRealRun(
+        temp_dir=external_temp,
+        final_dir=external_final,
+    )
+
+    with pytest.raises(ValueError, match="staged"):
+        RealArtifactWriter(tmp_path / "outputs").commit(forged)
+
+    assert external_temp.is_dir()
+    assert external_final.is_dir()
+
+
+def test_commit_rejects_replayed_staged_run(tmp_path: Path) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    final = writer.commit(staged)
+
+    with pytest.raises(ValueError, match="staged"):
+        writer.commit(staged)
+
+    assert final.is_dir()
+
+
+def test_commit_rejects_registered_staged_run_with_unsafe_paths(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path / "outputs")
+    staged = writer.stage(bundle())
+    original_temp = staged.temp_dir
+    external_final = tmp_path / "external-final"
+    object.__setattr__(staged, "final_dir", external_final)
+
+    with pytest.raises(ValueError, match="staged"):
+        writer.commit(staged)
+
+    assert original_temp.is_dir()
+    assert not external_final.exists()
+
+
+def test_rename_directory_exclusive_rejects_existing_empty_destination(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+
+    with pytest.raises(FileExistsError):
+        llm_artifacts._rename_directory_exclusive(source, destination)
+
+    assert source.is_dir()
+    assert destination.is_dir()
+
+
+def test_commit_atomic_rename_rejects_destination_created_after_precheck(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    atomic_rename = llm_artifacts._rename_directory_exclusive
+
+    def create_destination_then_rename(
+        source: Path,
+        destination: Path,
+    ) -> None:
+        destination.mkdir()
+        (destination / "racer").write_text("wins", encoding="utf-8")
+        atomic_rename(source, destination)
+
+    with mock.patch(
+        "app.experiments.llm_artifacts._rename_directory_exclusive",
+        side_effect=create_destination_then_rename,
+    ):
+        with pytest.raises(FileExistsError):
+            writer.commit(staged)
+
+    assert (staged.final_dir / "racer").read_text(encoding="utf-8") == "wins"
+    assert not staged.temp_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -330,6 +456,49 @@ def test_verifier_rejects_prompt_text_tampering_even_with_updated_file_hash(
     rewrite_output_hash(final, "prompt_snapshot.json")
 
     with pytest.raises(ValueError, match="prompt"):
+        verify_published_real_run(final)
+
+
+@pytest.mark.parametrize(
+    ("file_name", "mutate", "message"),
+    [
+        (
+            "summary.json",
+            lambda payload: payload["latency"].update(p50=101),
+            "latency",
+        ),
+        (
+            "summary.json",
+            lambda payload: payload["tokens"].update(total_total=41),
+            "token",
+        ),
+        (
+            "run_manifest.json",
+            lambda payload: payload.update(usage_status="unavailable"),
+            "usage",
+        ),
+        (
+            "run_manifest.json",
+            lambda payload: payload["datasets"].pop(),
+            "dataset",
+        ),
+    ],
+)
+def test_verifier_rejects_forged_record_derived_metadata(
+    tmp_path: Path,
+    file_name: str,
+    mutate: Callable[[dict[str, object]], None],
+    message: str,
+) -> None:
+    final = RealArtifactWriter(tmp_path).publish(bundle())
+    path = final / file_name
+    payload = json.loads(path.read_bytes())
+    mutate(payload)
+    path.write_bytes(canonical_json_bytes(payload))
+    if file_name != "run_manifest.json":
+        rewrite_output_hash(final, file_name)
+
+    with pytest.raises(ValueError, match=message):
         verify_published_real_run(final)
 
 
@@ -549,6 +718,87 @@ def test_stage_revalidates_bundle_cross_field_invariants(
     mutate: Callable[[RealRunArtifactBundle], RealRunArtifactBundle],
 ) -> None:
     with pytest.raises((ValidationError, ValueError)):
+        RealArtifactWriter(tmp_path).stage(mutate(bundle()))
+
+    if tmp_path.exists():
+        assert not list(tmp_path.glob(f".{RUN_ID}.tmp-*"))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda value: value.model_copy(
+                update={
+                    "summary": value.summary.model_copy(
+                        update={
+                            "latency": value.summary.latency.model_copy(
+                                update={"p50": 101}
+                            )
+                        }
+                    )
+                }
+            ),
+            "latency",
+        ),
+        (
+            lambda value: value.model_copy(
+                update={
+                    "summary": value.summary.model_copy(
+                        update={
+                            "tokens": value.summary.tokens.model_copy(
+                                update={"total_total": 41}
+                            )
+                        }
+                    )
+                }
+            ),
+            "token",
+        ),
+        (
+            lambda value: value.model_copy(
+                update={
+                    "manifest": value.manifest.model_copy(
+                        update={"usage_status": "unavailable"}
+                    )
+                }
+            ),
+            "usage",
+        ),
+        (
+            lambda value: value.model_copy(
+                update={
+                    "manifest": value.manifest.model_copy(
+                        update={"datasets": value.manifest.datasets[:1]}
+                    )
+                }
+            ),
+            "dataset",
+        ),
+        (
+            lambda value: value.model_copy(
+                update={
+                    "manifest": value.manifest.model_copy(
+                        update={
+                            "datasets": (
+                                value.manifest.datasets[0],
+                                value.manifest.datasets[0],
+                                value.manifest.datasets[1],
+                            )
+                        }
+                    )
+                }
+            ),
+            "dataset",
+        ),
+    ],
+)
+def test_stage_rejects_forged_record_derived_metadata(
+    tmp_path: Path,
+    mutate: Callable[[RealRunArtifactBundle], RealRunArtifactBundle],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
         RealArtifactWriter(tmp_path).stage(mutate(bundle()))
 
     if tmp_path.exists():
