@@ -308,6 +308,47 @@ def test_commit_rejects_staged_run_from_another_writer(
     assert not staged.final_dir.exists()
 
 
+def test_commit_rejects_replacement_at_verified_staging_path(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    verified_dir = tmp_path / "verified-staging"
+    staged.temp_dir.rename(verified_dir)
+    staged.temp_dir.mkdir()
+    replacement_file = staged.temp_dir / "unverified.txt"
+    replacement_file.write_text("unverified", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="staged"):
+        writer.commit(staged)
+
+    assert replacement_file.read_text(encoding="utf-8") == "unverified"
+    assert verified_dir.is_dir()
+    assert (verified_dir / "run_manifest.json").is_file()
+    assert not staged.final_dir.exists()
+
+
+def test_staging_identity_failure_does_not_consume_capability(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    verified_dir = tmp_path / "verified-staging"
+    replacement_dir = tmp_path / "replacement-staging"
+    staged.temp_dir.rename(verified_dir)
+    staged.temp_dir.mkdir()
+
+    with pytest.raises(ValueError, match="staged"):
+        writer.commit(staged)
+
+    staged.temp_dir.rename(replacement_dir)
+    verified_dir.rename(staged.temp_dir)
+
+    assert writer.commit(staged) == staged.final_dir
+    assert replacement_dir.is_dir()
+    assert staged.final_dir.is_dir()
+
+
 def test_commit_rejects_forged_staged_run_without_touching_external_paths(
     tmp_path: Path,
 ) -> None:

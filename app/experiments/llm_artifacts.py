@@ -3,6 +3,7 @@ import errno
 import json
 import math
 import os
+import secrets
 import shutil
 import stat
 import sys
@@ -650,6 +651,69 @@ class StagedRealRun:
     final_dir: Path
 
 
+DirectoryIdentity = tuple[int, int]
+
+
+@dataclass(frozen=True)
+class _StagedCapability:
+    staged: StagedRealRun
+    temp_dir: Path
+    final_dir: Path
+    identity: DirectoryIdentity
+
+
+def _directory_identity(metadata: os.stat_result) -> DirectoryIdentity:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _verified_directory_identity(
+    path: Path,
+    expected_identity: DirectoryIdentity,
+) -> DirectoryIdentity:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(
+            "staged directory does not match verified filesystem identity"
+        ) from exc
+    identity = _directory_identity(metadata)
+    if not stat.S_ISDIR(metadata.st_mode) or identity != expected_identity:
+        raise ValueError(
+            "staged directory does not match verified filesystem identity"
+        )
+    return identity
+
+
+def _open_verified_staging_directory(
+    path: Path,
+    expected_identity: DirectoryIdentity,
+) -> int:
+    before_identity = _verified_directory_identity(path, expected_identity)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        directory_fd = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(
+            "staged directory does not match verified filesystem identity"
+        ) from exc
+    opened = os.fstat(directory_fd)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or _directory_identity(opened) != expected_identity
+        or _directory_identity(opened) != before_identity
+    ):
+        os.close(directory_fd)
+        raise ValueError(
+            "staged directory does not match verified filesystem identity"
+        )
+    return directory_fd
+
+
 def _raise_rename_error(error_number: int, destination: Path) -> None:
     if error_number in (errno.EEXIST, errno.ENOTEMPTY):
         raise FileExistsError(
@@ -664,7 +728,10 @@ def _raise_rename_error(error_number: int, destination: Path) -> None:
     )
 
 
-def _rename_directory_exclusive(source: Path, destination: Path) -> None:
+def _rename_directory_exclusive_impl(
+    source: Path,
+    destination: Path,
+) -> None:
     if sys.platform == "win32":
         os.rename(source, destination)
         return
@@ -712,13 +779,62 @@ def _rename_directory_exclusive(source: Path, destination: Path) -> None:
         _raise_rename_error(ctypes.get_errno(), destination)
 
 
+def _rename_directory_exclusive(source: Path, destination: Path) -> None:
+    _rename_directory_exclusive_impl(source, destination)
+
+
+def _hidden_sibling(path: Path, purpose: str) -> Path:
+    while True:
+        candidate = path.with_name(
+            f".{path.name}.{purpose}-{secrets.token_hex(8)}"
+        )
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+
+
+def _cleanup_verified_staging(
+    path: Path,
+    expected_identity: DirectoryIdentity,
+) -> None:
+    try:
+        _verified_directory_identity(path, expected_identity)
+    except ValueError:
+        return
+
+    cleanup_path = _hidden_sibling(path, "cleanup")
+    try:
+        _rename_directory_exclusive_impl(path, cleanup_path)
+    except OSError:
+        return
+    try:
+        _verified_directory_identity(cleanup_path, expected_identity)
+    except ValueError:
+        try:
+            _rename_directory_exclusive_impl(cleanup_path, path)
+        except OSError:
+            pass
+        return
+    shutil.rmtree(cleanup_path, ignore_errors=True)
+
+
+def _move_unverified_final_aside(final_dir: Path, temp_dir: Path) -> None:
+    try:
+        final_dir.lstat()
+    except OSError:
+        return
+    destination = temp_dir
+    if destination.exists() or destination.is_symlink():
+        destination = _hidden_sibling(temp_dir, "rejected")
+    try:
+        _rename_directory_exclusive_impl(final_dir, destination)
+    except OSError:
+        pass
+
+
 class RealArtifactWriter:
     def __init__(self, output_root: Path) -> None:
         self.output_root = output_root
-        self._staged_capabilities: dict[
-            int,
-            tuple[StagedRealRun, Path, Path],
-        ] = {}
+        self._staged_capabilities: dict[int, _StagedCapability] = {}
 
     def _write_file(self, path: Path, contents: bytes) -> None:
         path.write_bytes(contents)
@@ -733,7 +849,8 @@ class RealArtifactWriter:
             strict=True,
         )
         self.output_root.mkdir(parents=True, exist_ok=True)
-        final_dir = self.output_root / validated.manifest.run_id
+        output_root = self.output_root.resolve()
+        final_dir = output_root / validated.manifest.run_id
         if final_dir.exists() or final_dir.is_symlink():
             raise FileExistsError(
                 f"run already exists: {validated.manifest.run_id}"
@@ -741,9 +858,10 @@ class RealArtifactWriter:
         temp_dir = Path(
             tempfile.mkdtemp(
                 prefix=f".{validated.manifest.run_id}.tmp-",
-                dir=self.output_root,
+                dir=output_root,
             )
         )
+        identity = _directory_identity(temp_dir.lstat())
         try:
             files = {
                 "case_runs.jsonl": canonical_real_jsonl_bytes(
@@ -770,58 +888,75 @@ class RealArtifactWriter:
                 canonical_json_bytes(published_manifest),
             )
             verify_published_real_run(temp_dir)
+            _verified_directory_identity(temp_dir, identity)
         except BaseException:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            _cleanup_verified_staging(temp_dir, identity)
             raise
         staged = StagedRealRun(temp_dir=temp_dir, final_dir=final_dir)
-        self._staged_capabilities[id(staged)] = (
-            staged,
-            temp_dir.resolve(),
-            final_dir.resolve(),
+        self._staged_capabilities[id(staged)] = _StagedCapability(
+            staged=staged,
+            temp_dir=temp_dir,
+            final_dir=final_dir,
+            identity=identity,
         )
         return staged
 
-    def _consume_staged_capability(
+    def _validate_staged_capability(
         self,
         staged: StagedRealRun,
-    ) -> tuple[Path, Path]:
+    ) -> _StagedCapability:
         capability = self._staged_capabilities.get(id(staged))
-        if capability is None or capability[0] is not staged:
+        if capability is None or capability.staged is not staged:
             raise ValueError("staged run was not created by this writer")
-        del self._staged_capabilities[id(staged)]
 
-        _, expected_temp, expected_final = capability
         output_root = self.output_root.resolve()
-        temp_dir = staged.temp_dir.resolve()
-        final_dir = staged.final_dir.resolve()
-        safe_prefix = f".{final_dir.name}.tmp-"
+        temp_dir = staged.temp_dir
+        final_dir = staged.final_dir
+        safe_prefix = f".{capability.final_dir.name}.tmp-"
         if (
-            temp_dir != expected_temp
-            or final_dir != expected_final
+            temp_dir != capability.temp_dir
+            or final_dir != capability.final_dir
             or temp_dir.parent != output_root
             or final_dir.parent != output_root
             or not temp_dir.name.startswith(safe_prefix)
             or temp_dir.name == safe_prefix
         ):
             raise ValueError("staged run paths are not safe for this writer")
-        return temp_dir, final_dir
+        return capability
 
     def commit(self, staged: StagedRealRun) -> Path:
-        temp_dir, final_dir = self._consume_staged_capability(staged)
+        capability = self._validate_staged_capability(staged)
+        temp_dir = capability.temp_dir
+        final_dir = capability.final_dir
+        directory_fd = _open_verified_staging_directory(
+            temp_dir,
+            capability.identity,
+        )
+        del self._staged_capabilities[id(staged)]
         try:
             with FileLock(self.output_root / _REAL_PUBLISH_LOCK_NAME):
                 if final_dir.exists() or final_dir.is_symlink():
                     raise FileExistsError(
                         f"run already exists: {final_dir.name}"
                     )
+                _verified_directory_identity(
+                    temp_dir,
+                    capability.identity,
+                )
                 _rename_directory_exclusive(temp_dir, final_dir)
+                try:
+                    _verified_directory_identity(
+                        final_dir,
+                        capability.identity,
+                    )
+                except ValueError:
+                    _move_unverified_final_aside(final_dir, temp_dir)
+                    raise
         except BaseException:
-            if temp_dir.exists() or temp_dir.is_symlink():
-                if temp_dir.is_symlink():
-                    temp_dir.unlink()
-                else:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+            _cleanup_verified_staging(temp_dir, capability.identity)
             raise
+        finally:
+            os.close(directory_fd)
         return staged.final_dir
 
     def publish(self, bundle: RealRunArtifactBundle) -> Path:
