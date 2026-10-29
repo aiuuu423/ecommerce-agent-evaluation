@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -15,7 +16,11 @@ from app.experiments.llm_artifacts import (
     VerifiedRealRunSnapshot,
     _cleanup_verified_staging,
     _directory_identity,
+    _move_verified_directory_to_hidden,
+    _open_verified_staging_directory,
+    _read_regular_file_at,
     _rename_directory_exclusive,
+    _verified_directory_identity,
     verify_published_real_run_snapshot,
 )
 from app.experiments.llm_run import PairedRunResult
@@ -24,6 +29,7 @@ COMPARISON_SCHEMA_VERSION = "1.0.0"
 _COMPARISON_FILE_NAME = "comparison.json"
 _PUBLISH_LOCK_NAME = ".comparison-publish.lock"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
+_CASE_ID_PATTERN = re.compile(r"CASE_[0-9]{3}")
 
 _CHECK_NAMES = (
     "group_ids_match",
@@ -114,8 +120,8 @@ class ComparisonManifest(_ComparisonModel):
         if len(self.case_ids) != len(set(self.case_ids)):
             raise ValueError("case IDs must be unique")
         if any(
-            len(case_id) != 8 or not case_id.startswith("CASE_") or not case_id[5:].isdigit()
-            for case_id in self.case_ids
+            _CASE_ID_PATTERN.fullmatch(case_id) is None
+            for case_id in (*self.case_ids, *self.version_order)
         ):
             raise ValueError("case IDs must use CASE_NNN format")
         if set(self.version_order) != set(self.case_ids):
@@ -320,16 +326,41 @@ def write_comparison(
         )
     )
     identity = _directory_identity(staging.lstat())
+    expected_contents = canonical_json_bytes(manifest)
     try:
-        (staging / _COMPARISON_FILE_NAME).write_bytes(canonical_json_bytes(manifest))
+        (staging / _COMPARISON_FILE_NAME).write_bytes(expected_contents)
         verify_comparison(staging)
         with FileLock(root / _PUBLISH_LOCK_NAME):
             if target.exists() or target.is_symlink():
                 raise ComparisonError("comparison already published")
+            directory_fd = _open_verified_staging_directory(staging, identity)
             try:
-                _rename_directory_exclusive(staging, target)
-            except FileExistsError as exc:
-                raise ComparisonError("comparison already published") from exc
+                if _read_comparison_directory_fd(directory_fd) != expected_contents:
+                    raise ComparisonError("staged comparison content changed")
+                _verified_directory_identity(staging, identity)
+                try:
+                    _rename_directory_exclusive(staging, target)
+                except FileExistsError as exc:
+                    raise ComparisonError("comparison already published") from exc
+                try:
+                    _verified_directory_identity(target, identity)
+                    if _read_comparison_directory_fd(directory_fd) != expected_contents:
+                        raise ComparisonError("published comparison content changed")
+                    verify_comparison(target)
+                    if _read_comparison_file(target) != expected_contents:
+                        raise ComparisonError("published comparison content changed")
+                    _verified_directory_identity(target, identity)
+                except BaseException:
+                    _quarantine_published_comparison(target, identity)
+                    raise
+            finally:
+                os.close(directory_fd)
+    except ComparisonError:
+        _cleanup_verified_staging(staging, identity)
+        raise
+    except (OSError, ValueError) as exc:
+        _cleanup_verified_staging(staging, identity)
+        raise ComparisonError("comparison publication verification failed") from exc
     except BaseException:
         _cleanup_verified_staging(staging, identity)
         raise
@@ -338,6 +369,32 @@ def write_comparison(
 
 def _reject_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _read_comparison_directory_fd(directory_fd: int) -> bytes:
+    if set(os.listdir(directory_fd)) != {_COMPARISON_FILE_NAME}:
+        raise ComparisonError("comparison must contain exactly comparison.json")
+    try:
+        return _read_regular_file_at(directory_fd, _COMPARISON_FILE_NAME)
+    except (OSError, ValueError) as exc:
+        raise ComparisonError(
+            "comparison.json must be a regular non-symlink file"
+        ) from exc
+
+
+def _quarantine_published_comparison(
+    target: Path,
+    expected_identity: tuple[int, int],
+) -> None:
+    try:
+        rejected = _move_verified_directory_to_hidden(
+            target,
+            expected_identity,
+            purpose="rejected",
+        )
+    except ValueError:
+        return
+    _cleanup_verified_staging(rejected, expected_identity)
 
 
 def _read_comparison_file(path: Path) -> bytes:
@@ -364,37 +421,7 @@ def _read_comparison_file(path: Path) -> bytes:
             before.st_ino,
         ):
             raise ComparisonError("comparison must be a non-symlink directory")
-        if set(os.listdir(directory_fd)) != {_COMPARISON_FILE_NAME}:
-            raise ComparisonError("comparison must contain exactly comparison.json")
-        file_before = os.stat(
-            _COMPARISON_FILE_NAME,
-            dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-        if not stat.S_ISREG(file_before.st_mode):
-            raise ComparisonError("comparison.json must be a regular non-symlink file")
-        file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            file_fd = os.open(
-                _COMPARISON_FILE_NAME,
-                file_flags,
-                dir_fd=directory_fd,
-            )
-        except OSError as exc:
-            raise ComparisonError("comparison.json must be a regular non-symlink file") from exc
-        try:
-            file_opened = os.fstat(file_fd)
-            if not stat.S_ISREG(file_opened.st_mode) or (
-                file_opened.st_dev,
-                file_opened.st_ino,
-            ) != (file_before.st_dev, file_before.st_ino):
-                raise ComparisonError("comparison.json must be a regular non-symlink file")
-            chunks: list[bytes] = []
-            while chunk := os.read(file_fd, 1024 * 1024):
-                chunks.append(chunk)
-            return b"".join(chunks)
-        finally:
-            os.close(file_fd)
+        return _read_comparison_directory_fd(directory_fd)
     finally:
         os.close(directory_fd)
 

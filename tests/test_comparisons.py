@@ -524,6 +524,71 @@ def test_atomic_publish_rejects_racing_target_and_preserves_racer(
     assert not list(comparisons_root.glob(f".{GROUP_ID}.tmp-*"))
 
 
+def test_publish_rejects_staging_content_replaced_before_rename(
+    tmp_path: Path,
+) -> None:
+    result, comparisons_root = _paired(tmp_path)
+    atomic_rename = comparisons._rename_directory_exclusive
+    target = comparisons_root / GROUP_ID
+
+    def replace_staging_contents(source: Path, destination: Path) -> None:
+        _rewrite_comparison(
+            source,
+            lambda payload: payload.__setitem__(
+                "v1_run_manifest_sha256",
+                "0" * 64,
+            ),
+        )
+        verify_comparison(source)
+        atomic_rename(source, destination)
+
+    with mock.patch(
+        "app.experiments.comparisons._rename_directory_exclusive",
+        side_effect=replace_staging_contents,
+    ):
+        with pytest.raises(ComparisonError):
+            write_comparison(result, comparisons_root=comparisons_root)
+
+    assert not target.exists()
+    assert not list(comparisons_root.glob(f".{GROUP_ID}.tmp-*"))
+
+
+def test_manifest_rejects_non_ascii_case_id_digits(
+    tmp_path: Path,
+) -> None:
+    result, comparisons_root = _paired(tmp_path)
+    path = write_comparison(result, comparisons_root=comparisons_root)
+    payload = verify_comparison(path).model_dump(mode="python")
+    unicode_case_id = "CASE_\u0661\u0662\u0663"
+    original_case_id = payload["case_ids"][0]
+    payload["case_ids"] = (unicode_case_id, *payload["case_ids"][1:])
+    payload["version_order"][unicode_case_id] = payload["version_order"].pop(
+        original_case_id
+    )
+
+    with pytest.raises(ValueError, match="CASE_NNN"):
+        comparisons.ComparisonManifest.model_validate(payload, strict=True)
+
+
+def test_verifier_rejects_canonical_non_ascii_case_id_digits(
+    tmp_path: Path,
+) -> None:
+    result, comparisons_root = _paired(tmp_path)
+    path = write_comparison(result, comparisons_root=comparisons_root)
+    file_path = path / "comparison.json"
+    payload = json.loads(file_path.read_bytes())
+    unicode_case_id = "CASE_\u0661\u0662\u0663"
+    original_case_id = payload["case_ids"][0]
+    payload["case_ids"][0] = unicode_case_id
+    payload["version_order"][unicode_case_id] = payload["version_order"].pop(
+        original_case_id
+    )
+    file_path.write_bytes(canonical_json_bytes(payload))
+
+    with pytest.raises(ComparisonError, match="validation failed"):
+        verify_comparison(path)
+
+
 def test_version_order_validation_uses_case_id_order_for_formal() -> None:
     formal_ids = tuple(f"CASE_{index:03d}" for index in range(1, 101))
     valid = {
