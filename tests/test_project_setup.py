@@ -22,6 +22,8 @@ def test_project_metadata_declares_python_311_and_phase_1_dependencies() -> None
         "build-phase1": "app.data.phase1:main",
         "phase2-smoke": "app.experiments.phase2_smoke:main",
         "phase3-baseline": "app.experiments.baseline_v1:main",
+        "real-llm-pilot": "app.experiments.llm_cli:pilot_main",
+        "real-llm-formal": "app.experiments.llm_cli:formal_main",
     }
     assert dependency_names(project["dependencies"]) == {
         "duckdb",
@@ -95,6 +97,8 @@ def test_generated_outputs_are_ignored_but_keep_files_are_trackable() -> None:
         "data/evaluation_cases/example.manifest.json",
         "data/results/example.json",
         "outputs/experiment_runs/example/summary.json",
+        "outputs/real_runs/example/summary.json",
+        "outputs/paired_comparisons/example/comparison.json",
     ):
         assert is_ignored(path), f"{path} should be ignored"
 
