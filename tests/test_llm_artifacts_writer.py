@@ -349,6 +349,30 @@ def test_commit_reverifies_staged_contents_before_publish(
         writer.commit(staged)
 
 
+def test_commit_rejects_self_consistent_staged_content_rewrite(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    records_path = staged.temp_dir / "case_runs.jsonl"
+    payload = [
+        json.loads(line) for line in records_path.read_bytes().splitlines()
+    ]
+    payload[0]["final_answer"] = "另一条合法回答"
+    records_path.write_bytes(
+        b"".join(canonical_json_bytes(item) for item in payload)
+    )
+    rewrite_output_hash(staged.temp_dir, "case_runs.jsonl")
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        writer.commit(staged)
+
+    assert not staged.temp_dir.exists()
+    assert not staged.final_dir.exists()
+    with pytest.raises(ValueError, match="staged"):
+        writer.commit(staged)
+
+
 def test_commit_reverify_failure_does_not_delete_unknown_replacement(
     tmp_path: Path,
 ) -> None:

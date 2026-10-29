@@ -564,8 +564,19 @@ def _read_regular_file_at(directory_fd: int, file_name: str) -> bytes:
         os.close(file_fd)
 
 
-def _read_real_directory(path: Path) -> dict[str, bytes]:
+def _read_real_directory_fd(directory_fd: int) -> dict[str, bytes]:
     expected_names = REAL_OUTPUT_FILE_NAMES | {"run_manifest.json"}
+    if set(os.listdir(directory_fd)) != expected_names:
+        raise ValueError(
+            "published run must contain exactly four artifact files"
+        )
+    return {
+        file_name: _read_regular_file_at(directory_fd, file_name)
+        for file_name in expected_names
+    }
+
+
+def _read_real_directory(path: Path) -> dict[str, bytes]:
     try:
         before = path.lstat()
     except FileNotFoundError:
@@ -596,14 +607,7 @@ def _read_real_directory(path: Path) -> dict[str, bytes]:
             raise ValueError(
                 "published run must be a non-symlink directory"
             )
-        if set(os.listdir(directory_fd)) != expected_names:
-            raise ValueError(
-                "published run must contain exactly four artifact files"
-            )
-        return {
-            file_name: _read_regular_file_at(directory_fd, file_name)
-            for file_name in expected_names
-        }
+        return _read_real_directory_fd(directory_fd)
     finally:
         os.close(directory_fd)
 
@@ -670,6 +674,7 @@ class _StagedCapability:
     temp_dir: Path
     final_dir: Path
     identity: DirectoryIdentity
+    file_fingerprints: tuple[tuple[str, str], ...]
 
 
 def _directory_identity(metadata: os.stat_result) -> DirectoryIdentity:
@@ -901,16 +906,30 @@ class RealArtifactWriter:
                 canonical_json_bytes(published_manifest),
             )
             verify_published_real_run(temp_dir)
-            _verified_directory_identity(temp_dir, identity)
+            directory_fd = _open_verified_staging_directory(
+                temp_dir,
+                identity,
+            )
+            try:
+                staged_files = _read_real_directory_fd(directory_fd)
+            finally:
+                os.close(directory_fd)
         except BaseException:
             _cleanup_verified_staging(temp_dir, identity)
             raise
+        file_fingerprints = tuple(
+            sorted(
+                (file_name, sha256(contents).hexdigest())
+                for file_name, contents in staged_files.items()
+            )
+        )
         staged = StagedRealRun(temp_dir=temp_dir, final_dir=final_dir)
         self._staged_capabilities[id(staged)] = _StagedCapability(
             staged=staged,
             temp_dir=temp_dir,
             final_dir=final_dir,
             identity=identity,
+            file_fingerprints=file_fingerprints,
         )
         return staged
 
@@ -951,6 +970,17 @@ class RealArtifactWriter:
                 if final_dir.exists() or final_dir.is_symlink():
                     raise FileExistsError(
                         f"run already exists: {final_dir.name}"
+                    )
+                staged_files = _read_real_directory_fd(directory_fd)
+                file_fingerprints = tuple(
+                    sorted(
+                        (file_name, sha256(contents).hexdigest())
+                        for file_name, contents in staged_files.items()
+                    )
+                )
+                if file_fingerprints != capability.file_fingerprints:
+                    raise ValueError(
+                        "staged artifact file fingerprint mismatch"
                     )
                 verify_published_real_run(temp_dir)
                 _verified_directory_identity(
