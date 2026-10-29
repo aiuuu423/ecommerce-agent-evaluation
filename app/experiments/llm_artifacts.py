@@ -842,6 +842,55 @@ def _cleanup_verified_staging(
     shutil.rmtree(cleanup_path, ignore_errors=True)
 
 
+def _move_verified_directory_to_hidden(
+    path: Path,
+    expected_identity: DirectoryIdentity,
+    *,
+    purpose: str,
+    expected_file_fingerprints: tuple[tuple[str, str], ...] | None = None,
+) -> Path:
+    _verified_directory_identity(path, expected_identity)
+    hidden_path = _hidden_sibling(path, purpose)
+    _rename_directory_exclusive_impl(path, hidden_path)
+    try:
+        _verified_directory_identity(hidden_path, expected_identity)
+        if expected_file_fingerprints is not None:
+            directory_fd = _open_verified_staging_directory(
+                hidden_path,
+                expected_identity,
+            )
+            try:
+                hidden_files = _read_real_directory_fd(directory_fd)
+            finally:
+                os.close(directory_fd)
+            hidden_fingerprints = tuple(
+                sorted(
+                    (file_name, sha256(contents).hexdigest())
+                    for file_name, contents in hidden_files.items()
+                )
+            )
+            if hidden_fingerprints != expected_file_fingerprints:
+                raise ValueError(
+                    "published artifact file fingerprint mismatch"
+                )
+    except BaseException:
+        try:
+            _rename_directory_exclusive_impl(hidden_path, path)
+        except OSError:
+            pass
+        raise
+    return hidden_path
+
+
+def _remove_retired_directory(path: Path) -> None:
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        raise OSError(
+            f"failed to remove retired directory: {path}"
+        ) from exc
+
+
 def _move_unverified_final_aside(final_dir: Path, temp_dir: Path) -> None:
     try:
         final_dir.lstat()
@@ -1022,11 +1071,13 @@ class RealArtifactWriter:
             capability.temp_dir,
             capability.identity,
         )
-        del self._staged_capabilities[id(staged)]
-        _cleanup_verified_staging(
+        cleanup_path = _move_verified_directory_to_hidden(
             capability.temp_dir,
             capability.identity,
+            purpose="cleanup",
         )
+        del self._staged_capabilities[id(staged)]
+        _remove_retired_directory(cleanup_path)
 
     def rollback_published(self, path: Path) -> None:
         capability = self._published_capabilities.get(path)
@@ -1061,45 +1112,14 @@ class RealArtifactWriter:
             raise ValueError("published artifact file fingerprint mismatch")
         _verified_directory_identity(path, capability.identity)
 
-        del self._published_capabilities[path]
-        rollback_path = _hidden_sibling(path, "rollback")
-        try:
-            _rename_directory_exclusive_impl(path, rollback_path)
-        except OSError:
-            return
-        try:
-            _verified_directory_identity(
-                rollback_path,
-                capability.identity,
-            )
-            rollback_fd = _open_verified_staging_directory(
-                rollback_path,
-                capability.identity,
-            )
-            try:
-                rollback_files = _read_real_directory_fd(rollback_fd)
-            finally:
-                os.close(rollback_fd)
-            rollback_fingerprints = tuple(
-                sorted(
-                    (file_name, sha256(contents).hexdigest())
-                    for file_name, contents in rollback_files.items()
-                )
-            )
-            if rollback_fingerprints != capability.file_fingerprints:
-                raise ValueError(
-                    "published artifact file fingerprint mismatch"
-                )
-        except BaseException:
-            try:
-                _rename_directory_exclusive_impl(rollback_path, path)
-            except OSError:
-                pass
-            raise
-        _cleanup_verified_staging(
-            rollback_path,
+        rollback_path = _move_verified_directory_to_hidden(
+            path,
             capability.identity,
+            purpose="rollback",
+            expected_file_fingerprints=capability.file_fingerprints,
         )
+        del self._published_capabilities[path]
+        _remove_retired_directory(rollback_path)
 
     def publish(self, bundle: RealRunArtifactBundle) -> Path:
         staged = self.stage(bundle)

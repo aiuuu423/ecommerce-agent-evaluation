@@ -465,6 +465,73 @@ def test_discard_removes_owned_staging_and_rejects_replay(
         writer.discard(staged)
 
 
+def test_discard_move_failure_preserves_path_and_capability_for_retry(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+
+    with mock.patch(
+        "app.experiments.llm_artifacts._rename_directory_exclusive_impl",
+        side_effect=OSError("injected discard move failure"),
+    ):
+        with pytest.raises(OSError, match="discard move failure"):
+            writer.discard(staged)
+
+    assert staged.temp_dir.is_dir()
+    writer.discard(staged)
+    assert not staged.temp_dir.exists()
+    with pytest.raises(ValueError, match="staged"):
+        writer.discard(staged)
+
+
+def test_discard_restores_directory_when_hidden_identity_check_fails(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+    verify_identity = llm_artifacts._verified_directory_identity
+
+    def fail_hidden_identity(
+        path: Path,
+        expected_identity: tuple[int, int],
+    ) -> tuple[int, int]:
+        if path != staged.temp_dir:
+            raise ValueError("injected hidden identity mismatch")
+        return verify_identity(path, expected_identity)
+
+    with mock.patch(
+        "app.experiments.llm_artifacts._verified_directory_identity",
+        side_effect=fail_hidden_identity,
+    ):
+        with pytest.raises(ValueError, match="hidden identity mismatch"):
+            writer.discard(staged)
+
+    assert staged.temp_dir.is_dir()
+    writer.discard(staged)
+    assert not staged.temp_dir.exists()
+
+
+def test_discard_cleanup_failure_leaves_hidden_evidence_and_consumes_capability(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    staged = writer.stage(bundle())
+
+    with mock.patch.object(
+        llm_artifacts.shutil,
+        "rmtree",
+        side_effect=OSError("injected rmtree failure"),
+    ):
+        with pytest.raises(OSError, match="failed to remove retired directory"):
+            writer.discard(staged)
+
+    assert not staged.temp_dir.exists()
+    assert len(list(tmp_path.glob(f".{staged.temp_dir.name}.cleanup-*"))) == 1
+    with pytest.raises(ValueError, match="staged"):
+        writer.discard(staged)
+
+
 def test_discard_rejects_forged_and_cross_writer_staging(
     tmp_path: Path,
 ) -> None:
@@ -510,6 +577,46 @@ def test_rollback_published_removes_owned_final_and_rejects_replay(
     writer.rollback_published(final)
 
     assert not final.exists()
+    with pytest.raises(ValueError, match="published"):
+        writer.rollback_published(final)
+
+
+def test_rollback_move_failure_preserves_path_and_capability_for_retry(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    final = writer.publish(bundle())
+
+    with mock.patch(
+        "app.experiments.llm_artifacts._rename_directory_exclusive_impl",
+        side_effect=OSError("injected rollback move failure"),
+    ):
+        with pytest.raises(OSError, match="rollback move failure"):
+            writer.rollback_published(final)
+
+    assert final.is_dir()
+    writer.rollback_published(final)
+    assert not final.exists()
+    with pytest.raises(ValueError, match="published"):
+        writer.rollback_published(final)
+
+
+def test_rollback_cleanup_failure_leaves_hidden_evidence_and_consumes_capability(
+    tmp_path: Path,
+) -> None:
+    writer = RealArtifactWriter(tmp_path)
+    final = writer.publish(bundle())
+
+    with mock.patch.object(
+        llm_artifacts.shutil,
+        "rmtree",
+        side_effect=OSError("injected rmtree failure"),
+    ):
+        with pytest.raises(OSError, match="failed to remove retired directory"):
+            writer.rollback_published(final)
+
+    assert not final.exists()
+    assert len(list(tmp_path.glob(f".{final.name}.rollback-*"))) == 1
     with pytest.raises(ValueError, match="published"):
         writer.rollback_published(final)
 
