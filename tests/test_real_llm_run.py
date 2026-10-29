@@ -1,10 +1,12 @@
 import json
+import re
 from collections import Counter
 from copy import deepcopy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
+from inspect import signature
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
@@ -27,7 +29,7 @@ from app.experiments.llm_run import (
     RunLevelError,
     RunSettings,
 )
-from app.experiments.llm_settings import ProviderSettings
+from app.experiments.llm_settings import ProviderConfigError, ProviderSettings
 from app.experiments.pilot_cases import PILOT_CASE_IDS, pilot_case_set_sha256
 
 ROOT = Path(__file__).parents[1]
@@ -227,8 +229,12 @@ def _coordinator(transport: ImmediateAnswerTransport) -> PairedRunCoordinator:
 def test_task9_public_api_is_frozen_and_error_codes_are_exact() -> None:
     settings = RunSettings()
     result_fields = tuple(PairedRunResult.__dataclass_fields__)
+    run_signature = signature(PairedRunCoordinator.run)
 
     assert settings == RunSettings(max_steps=8, concurrency=1, repeats=1)
+    assert get_type_hints(PairedRunResult)["mode"] is str
+    assert run_signature.parameters["mode"].annotation is str
+    assert get_type_hints(PairedRunCoordinator.run)["mode"] is str
     assert result_fields == (
         "comparison_group_id",
         "mode",
@@ -279,7 +285,13 @@ def test_pilot_runs_frozen_cases_and_publishes_verified_pair(
     assert result.v1.manifest.case_subset_sha256 == pilot_case_set_sha256()
     assert result.v1.manifest.comparison_group_id == result.comparison_group_id
     assert result.v2.manifest.comparison_group_id == result.comparison_group_id
+    assert result.comparison_group_id.startswith("pilot__")
     for published, version in ((result.v1, "v1"), (result.v2, "v2")):
+        run_id_pattern = rf"real-{version}-pilot__\d{{8}}T\d{{6}}Z__[0-9a-f]{{8}}"
+        assert re.fullmatch(run_id_pattern, published.manifest.run_id)
+        assert (
+            result.v1_path if version == "v1" else result.v2_path
+        ).name == published.manifest.run_id
         assert published == verify_published_real_run(
             result.v1_path if version == "v1" else result.v2_path
         )
@@ -340,7 +352,19 @@ def test_formal_alternates_execution_but_preserves_record_order(
         case_id: (("v1", "v2") if index % 2 else ("v2", "v1"))
         for index, case_id in enumerate(case_ids, start=1)
     }
-    for published in (result.v1, result.v2):
+    assert result.comparison_group_id.startswith("formal__")
+    expected_subset_sha256 = (
+        "e2dd978689d5674aa6b1ffcdda27d3dc9b5e1b2f8a65487fe50514f3b3d30d11"
+    )
+    for published, version, path in (
+        (result.v1, "v1", result.v1_path),
+        (result.v2, "v2", result.v2_path),
+    ):
+        assert re.fullmatch(
+            rf"real-{version}__\d{{8}}T\d{{6}}Z__[0-9a-f]{{8}}",
+            published.manifest.run_id,
+        )
+        assert path.name == published.manifest.run_id
         assert tuple(record.case_id for record in published.records) == case_ids
         assert tuple(record.sequence for record in published.records) == tuple(
             range(1, 101)
@@ -350,7 +374,7 @@ def test_formal_alternates_execution_but_preserves_record_order(
         assert published.summary.tokens.sample_size == 0
         assert len(published.manifest.datasets) == 2
         assert published.manifest.case_subset_id == "all-100-v1"
-        assert len(published.manifest.case_subset_sha256) == 64
+        assert published.manifest.case_subset_sha256 == expected_subset_sha256
     assert len(transport.calls) == 200
 
 
@@ -405,7 +429,7 @@ def test_invalid_mode_provider_mapping_and_dataset_directory_fail_before_calls(
     transport = ImmediateAnswerTransport()
     with pytest.raises(RunLevelError):
         _coordinator(transport).run(
-            mode="dry-run",  # type: ignore[arg-type]
+            mode="dry-run",
             cases=bundle,
             dataset_dirs=mapping,
             run_output_root=tmp_path / "mode",
@@ -413,7 +437,7 @@ def test_invalid_mode_provider_mapping_and_dataset_directory_fail_before_calls(
     assert transport.calls == []
 
     transport = ImmediateAnswerTransport()
-    with pytest.raises(ValueError):
+    with pytest.raises((ValueError, ProviderConfigError)):
         PairedRunCoordinator(
             provider=_provider(temperature=0.1),
             transport=transport,
@@ -448,6 +472,63 @@ def test_invalid_mode_provider_mapping_and_dataset_directory_fail_before_calls(
             run_output_root=tmp_path / "identity",
         )
     assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"api_key": ""}, "missing_api_key"),
+        ({"model": " \t "}, "missing_model"),
+        ({"base_url": "not-a-url"}, "invalid_base_url"),
+        ({"base_url": "https://url-secret@example.test/v1"}, "invalid_base_url"),
+        ({"base_url": "https://example.test/v1?secret=1"}, "invalid_base_url"),
+        ({"base_url": "https://example.test/v1#secret"}, "invalid_base_url"),
+        ({"base_url": "https://example.test:99999/v1"}, "invalid_base_url"),
+        ({"temperature": 0.1}, "invalid_temperature"),
+        ({"timeout_seconds": -1.0}, "invalid_timeout"),
+        ({"timeout_seconds": float("nan")}, "invalid_timeout"),
+    ],
+)
+def test_invalid_provider_settings_fail_at_construction_without_transport_calls(
+    overrides: dict[str, object],
+    code: str,
+) -> None:
+    transport = ImmediateAnswerTransport()
+    provider = replace(_provider(), **overrides)
+
+    with pytest.raises((ValueError, ProviderConfigError)) as caught:
+        PairedRunCoordinator(
+            provider=provider,
+            transport=transport,
+            tool_contract_path=TOOL_CONTRACT,
+        )
+
+    assert str(caught.value) == code
+    assert transport.calls == []
+    assert "offline-secret" not in repr(caught.value)
+    assert "url-secret" not in repr(caught.value)
+
+
+def test_coordinator_stores_normalized_provider_settings() -> None:
+    coordinator = PairedRunCoordinator(
+        provider=ProviderSettings(
+            api_key="  offline-secret  ",
+            model="  offline-model  ",
+            base_url="  https://offline.example/v1///  ",
+            temperature=0.0,
+            timeout_seconds=12.0,
+        ),
+        transport=ImmediateAnswerTransport(),
+        tool_contract_path=TOOL_CONTRACT,
+    )
+
+    assert coordinator.provider == ProviderSettings(
+        api_key="offline-secret",
+        model="offline-model",
+        base_url="https://offline.example/v1",
+        temperature=0.0,
+        timeout_seconds=12.0,
+    )
 
 
 @pytest.mark.parametrize("identity_kind", ["dataset", "tool_contract"])

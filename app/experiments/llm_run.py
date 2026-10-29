@@ -1,3 +1,4 @@
+import json
 import math
 import secrets
 import shutil
@@ -12,14 +13,13 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from importlib.metadata import version
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from app.agents import AgentRunner, RunRequest, RunResult, TraceEventType
 from app.data.database import open_dataset
 from app.experiments.artifacts import (
     DatasetArtifactIdentity,
     RuntimeVersions,
-    canonical_json_bytes,
 )
 from app.experiments.baseline_v1 import (
     RunLevelError,
@@ -41,7 +41,12 @@ from app.experiments.llm_artifacts import (
     StoredPromptSnapshot,
     verify_published_real_run,
 )
-from app.experiments.llm_settings import ProviderSettings, base_url_host
+from app.experiments.llm_settings import (
+    ProviderConfigError,
+    ProviderSettings,
+    base_url_host,
+    load_provider_settings,
+)
 from app.experiments.pilot_cases import pilot_case_set_sha256, select_pilot_cases
 from app.llm.openai_compatible import JsonTransport, OpenAICompatibleAdapter
 from app.prompts import v1_prompt_snapshot, v2_prompt_snapshot
@@ -82,7 +87,7 @@ class RunSettings:
 @dataclass(frozen=True)
 class PairedRunResult:
     comparison_group_id: str
-    mode: ExperimentMode
+    mode: str
     v1: PublishedRealRun
     v2: PublishedRealRun
     v1_path: Path
@@ -108,6 +113,18 @@ def _utc_text(value: datetime) -> str:
 def _comparison_group_id(mode: ExperimentMode, started_at: datetime) -> str:
     timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
     return f"{mode}__{timestamp}__{secrets.token_hex(4)}"
+
+
+def _run_id(
+    agent_version: AgentVersion,
+    mode: ExperimentMode,
+    started_at: datetime,
+) -> str:
+    timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
+    pilot_suffix = "-pilot" if mode == "pilot" else ""
+    return (
+        f"real-{agent_version}{pilot_suffix}__{timestamp}__{secrets.token_hex(4)}"
+    )
 
 
 def _git_identity() -> tuple[str, bool]:
@@ -247,7 +264,13 @@ def _prompt_identity(snapshot: StoredPromptSnapshot) -> PromptIdentity:
 
 
 def _formal_subset_sha256(case_ids: tuple[str, ...]) -> str:
-    return sha256(canonical_json_bytes({"case_ids": case_ids})).hexdigest()
+    payload = json.dumps(
+        {"case_ids": list(case_ids)},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
 
 
 def _path_identity(path: Path) -> tuple[int, int] | None:
@@ -283,11 +306,20 @@ class PairedRunCoordinator:
     ) -> None:
         if not isinstance(provider, ProviderSettings):
             raise TypeError("provider must be ProviderSettings")
-        if provider.temperature != 0.0:
-            raise ValueError("provider temperature must be zero")
+        if not isinstance(provider.base_url, str) or not provider.base_url.strip():
+            raise ProviderConfigError("invalid_base_url")
+        normalized_provider = load_provider_settings(
+            {
+                "LLM_API_KEY": provider.api_key,
+                "LLM_MODEL": provider.model,
+                "LLM_BASE_URL": provider.base_url,
+                "LLM_TEMPERATURE": str(provider.temperature),
+                "LLM_TIMEOUT_SECONDS": str(provider.timeout_seconds),
+            }
+        )
         if run_settings != RunSettings():
             raise ValueError("run settings must use the frozen defaults")
-        self.provider = provider
+        self.provider = normalized_provider
         self.run_settings = run_settings
         self.transport = transport
         self.tool_contract_path = tool_contract_path
@@ -295,12 +327,13 @@ class PairedRunCoordinator:
     def run(
         self,
         *,
-        mode: ExperimentMode,
+        mode: str,
         cases: CaseBundle,
         dataset_dirs: Mapping[str, Path],
         run_output_root: Path,
     ) -> PairedRunResult:
         selected = self._preflight(mode, cases, dataset_dirs)
+        validated_mode = cast(ExperimentMode, mode)
         selected_ids = {case.dataset_id for case in selected}
         selected_dataset_dirs = {
             dataset_id: dataset_dirs[dataset_id] for dataset_id in selected_ids
@@ -318,7 +351,7 @@ class PairedRunCoordinator:
         validate_registry_contract(initial_tool_contract)
 
         started_at = _utc_now()
-        comparison_group_id = _comparison_group_id(mode, started_at)
+        comparison_group_id = _comparison_group_id(validated_mode, started_at)
         snapshots = {
             "v1": _stored_prompt(v1_prompt_snapshot()),
             "v2": _stored_prompt(v2_prompt_snapshot()),
@@ -327,7 +360,7 @@ class PairedRunCoordinator:
         version_order: dict[str, tuple[str, ...]] = {}
         for index, case in enumerate(selected, start=1):
             order: tuple[AgentVersion, AgentVersion]
-            if mode == "pilot" or index % 2:
+            if validated_mode == "pilot" or index % 2:
                 order = ("v1", "v2")
             else:
                 order = ("v2", "v1")
@@ -358,7 +391,7 @@ class PairedRunCoordinator:
             for dataset_id, manifest_hash, _source_hash in initial_dataset_identity
         }
         case_ids = tuple(case.case_id for case in selected)
-        if mode == "pilot":
+        if validated_mode == "pilot":
             subset_id = "pilot-20-v1"
             subset_sha256 = pilot_case_set_sha256()
         else:
@@ -368,7 +401,7 @@ class PairedRunCoordinator:
         bundles = {
             agent_version: self._bundle(
                 agent_version=agent_version,
-                mode=mode,
+                mode=validated_mode,
                 comparison_group_id=comparison_group_id,
                 selected=selected,
                 timed_results=results[agent_version],
@@ -394,7 +427,7 @@ class PairedRunCoordinator:
         )
         return PairedRunResult(
             comparison_group_id=comparison_group_id,
-            mode=mode,
+            mode=validated_mode,
             v1=v1,
             v2=v2,
             v1_path=v1_path,
@@ -537,7 +570,7 @@ class PairedRunCoordinator:
         summary = _summary(records)
         manifest = RealRunManifest(
             artifact_schema_version=ARTIFACT_SCHEMA_VERSION,
-            run_id=f"{comparison_group_id}__{agent_version}",
+            run_id=_run_id(agent_version, mode, started_at),
             comparison_group_id=comparison_group_id,
             experiment_mode=mode,
             agent_version=agent_version,
