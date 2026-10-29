@@ -62,6 +62,13 @@ def test_base_url_host_returns_only_hostname() -> None:
         ({"LLM_BASE_URL": "https://user@example.com/v1"}, "invalid_base_url"),
         ({"LLM_BASE_URL": "https://user:password@example.com/v1"}, "invalid_base_url"),
         ({"LLM_BASE_URL": "http://["}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "https://example.test:abc/v1"}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "https://example.test:99999/v1"}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "https://example.test/v1?x=1"}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "https://example.test/v1#frag"}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "https://exam ple.test/v1"}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "https://example.test\\evil/v1"}, "invalid_base_url"),
+        ({"LLM_BASE_URL": "https://example\x7f.test/v1"}, "invalid_base_url"),
     ],
 )
 def test_load_provider_settings_rejects_invalid_values(
@@ -74,6 +81,8 @@ def test_load_provider_settings_rejects_invalid_values(
     assert caught.value.code == code
     assert str(caught.value) == code
     assert "test-key" not in repr(caught.value)
+    if "LLM_BASE_URL" in overrides:
+        assert overrides["LLM_BASE_URL"] not in repr(caught.value)
 
 
 def test_load_provider_settings_strips_values_and_normalizes_base_url() -> None:
@@ -93,6 +102,22 @@ def test_load_provider_settings_strips_values_and_normalizes_base_url() -> None:
         base_url="http://localhost:8080/v1",
         temperature=0.0,
         timeout_seconds=15.5,
+    )
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8080/v1",
+        "https://example.test/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://[::1]:8080/v1",
+    ],
+)
+def test_load_provider_settings_accepts_supported_host_forms(base_url: str) -> None:
+    assert (
+        load_provider_settings(valid_environ(LLM_BASE_URL=base_url)).base_url
+        == base_url
     )
 
 

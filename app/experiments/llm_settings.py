@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
+from unicodedata import category
 from urllib.parse import urlsplit
 
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
@@ -45,11 +46,21 @@ def load_provider_settings(environ: Mapping[str, str]) -> ProviderSettings:
         base_url = raw_base_url.strip().rstrip("/")
     try:
         parsed_base_url = urlsplit(base_url)
+        hostname = parsed_base_url.hostname
+        _ = parsed_base_url.port
         if (
             parsed_base_url.scheme not in {"http", "https"}
-            or not parsed_base_url.hostname
+            or not hostname
             or parsed_base_url.username is not None
             or parsed_base_url.password is not None
+            or parsed_base_url.query
+            or parsed_base_url.fragment
+            or any(
+                character == "\\"
+                or character.isspace()
+                or category(character) == "Cc"
+                for character in hostname
+            )
         ):
             raise ProviderConfigError("invalid_base_url")
     except ValueError:
